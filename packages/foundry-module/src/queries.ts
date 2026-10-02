@@ -163,6 +163,10 @@ export class QueryHandlers {
     CONFIG.queries[`${modulePrefix}.addSpellsToActor`] = this.handleAddSpellsToActor.bind(this);
     CONFIG.queries[`${modulePrefix}.addFeaturesFromCompendium`] =
       this.handleAddFeaturesFromCompendium.bind(this);
+
+    // Table control queries
+    CONFIG.queries[`${modulePrefix}.set-paused`] = this.handleSetPaused.bind(this);
+    CONFIG.queries[`${modulePrefix}.narrate`] = this.handleNarrate.bind(this);
   }
 
   /**
@@ -2191,5 +2195,60 @@ export class QueryHandlers {
     if (!gmCheck.allowed) return { error: 'Access denied', success: false };
     this.dataAccess.validateFoundryState();
     return this.dataAccess.manageEffects(data);
+  }
+
+  /**
+   * Handle set paused request
+   */
+  private async handleSetPaused(data: { paused: boolean }): Promise<any> {
+    try {
+      // SECURITY: Silent GM validation
+      const gmCheck = this.validateGMAccess();
+      if (!gmCheck.allowed) {
+        return { error: 'Access denied', success: false };
+      }
+
+      this.dataAccess.validateFoundryState();
+
+      if (typeof data.paused !== 'boolean') {
+        throw new Error('paused is required and must be a boolean');
+      }
+
+      return await this.dataAccess.setPaused(data.paused);
+    } catch (error) {
+      throw new Error(
+        `Failed to set paused state: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Handle narrate (GM chat message) request
+   */
+  private async handleNarrate(data: {
+    content: string;
+    speaker?: { alias?: string; actorId?: string; tokenId?: string };
+    style?: 'ooc' | 'ic' | 'emote' | 'narration';
+    whisperTo?: string[];
+  }): Promise<any> {
+    try {
+      // SECURITY: Silent GM validation
+      const gmCheck = this.validateGMAccess();
+      if (!gmCheck.allowed) {
+        return { error: 'Access denied', success: false };
+      }
+
+      this.dataAccess.validateFoundryState();
+
+      if (!data.content) {
+        throw new Error('content is required');
+      }
+
+      return await this.dataAccess.narrate(data);
+    } catch (error) {
+      throw new Error(
+        `Failed to post narration: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
   }
 }

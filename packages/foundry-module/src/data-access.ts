@@ -237,6 +237,7 @@ interface WorldInfo {
   system: string;
   systemVersion: string;
   foundryVersion: string;
+  paused: boolean;
   users: WorldUser[];
 }
 
@@ -3912,6 +3913,7 @@ export class FoundryDataAccess {
       system: game.system.id,
       systemVersion: game.system.version,
       foundryVersion: game.version,
+      paused: game.paused,
       users: game.users.map(user => ({
         id: user.id || '',
         name: user.name || '',
@@ -11188,6 +11190,143 @@ export class FoundryDataAccess {
   }
 
   // ─── mgt2e ──────────────────────────────────────────────────────────────────
+
+  // ─── Table control ──────────────────────────────────────────────────────────
+
+  /**
+   * Pause or unpause the game for all connected clients.
+   */
+  async setPaused(paused: boolean): Promise<{ success: boolean; paused: boolean }> {
+    this.validateFoundryState();
+
+    const permissionCheck = permissionManager.checkWritePermission('setPaused');
+    if (!permissionCheck.allowed) {
+      throw new Error(`${ERROR_MESSAGES.ACCESS_DENIED}: ${permissionCheck.reason}`);
+    }
+
+    try {
+      // v14: game.togglePause(pause, {broadcast}) returns the resulting paused state.
+      // broadcast requires a GM user, which the bridge client always is.
+      const newState = (game as any).togglePause(paused, { broadcast: true });
+
+      this.auditLog('setPaused', { paused }, 'success');
+
+      return { success: true, paused: newState };
+    } catch (error) {
+      this.auditLog(
+        'setPaused',
+        { paused },
+        'failure',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+      throw new Error(
+        `Failed to set paused state: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Post a chat message as the DM/narrator (or as a given actor/token), optionally
+   * whispered to specific players. Used for GM narration, not player-authored chat.
+   */
+  async narrate(data: {
+    content: string;
+    speaker?: { alias?: string; actorId?: string; tokenId?: string };
+    style?: 'ooc' | 'ic' | 'emote' | 'narration';
+    whisperTo?: string[];
+  }): Promise<{ success: boolean; messageId: string }> {
+    this.validateFoundryState();
+
+    const permissionCheck = permissionManager.checkWritePermission('createChatMessage');
+    if (!permissionCheck.allowed) {
+      throw new Error(`${ERROR_MESSAGES.ACCESS_DENIED}: ${permissionCheck.reason}`);
+    }
+
+    if (!data.content) {
+      throw new Error('content is required');
+    }
+
+    try {
+      const speakerInput = data.speaker;
+      let speakerData: any;
+
+      if (speakerInput?.tokenId) {
+        const scene = (game.scenes as any).current ?? (game.scenes as any).active;
+        const token = scene?.tokens.get(speakerInput.tokenId);
+        if (!token) {
+          throw new Error(`Token ${speakerInput.tokenId} not found in current scene`);
+        }
+        speakerData = ChatMessage.getSpeaker({ token, alias: speakerInput.alias });
+      } else if (speakerInput?.actorId) {
+        const actor = game.actors.get(speakerInput.actorId);
+        if (!actor) {
+          throw new Error(`Actor ${speakerInput.actorId} not found`);
+        }
+        speakerData = ChatMessage.getSpeaker({ actor, alias: speakerInput.alias });
+      } else {
+        // No speaker given: speak as a narrator alias, not as the claude-mcp GM user.
+        speakerData = ChatMessage.getSpeaker({ alias: speakerInput?.alias || 'Narrator' });
+      }
+
+      const styleMap: Record<string, number> = {
+        ooc: (CONST as any).CHAT_MESSAGE_STYLES?.OOC ?? 1,
+        ic: (CONST as any).CHAT_MESSAGE_STYLES?.IC ?? 2,
+        emote: (CONST as any).CHAT_MESSAGE_STYLES?.EMOTE ?? 3,
+        narration: (CONST as any).CHAT_MESSAGE_STYLES?.OTHER ?? 0,
+      };
+      const style = styleMap[data.style ?? 'narration'];
+
+      const whisper: string[] = [];
+      if (data.whisperTo && data.whisperTo.length > 0) {
+        const unresolved: string[] = [];
+        for (const target of data.whisperTo) {
+          const user =
+            game.users.get(target) ??
+            game.users.find((u: any) => u.name?.toLowerCase() === target.toLowerCase());
+          if (user?.id) {
+            if (!whisper.includes(user.id)) whisper.push(user.id);
+          } else {
+            unresolved.push(target);
+          }
+        }
+        if (unresolved.length > 0) {
+          throw new Error(`Could not resolve whisper target(s): ${unresolved.join(', ')}`);
+        }
+      }
+
+      const messageData: Record<string, unknown> = {
+        content: data.content,
+        speaker: speakerData,
+        style,
+      };
+      if (whisper.length > 0) {
+        messageData.whisper = whisper;
+      }
+
+      const chatMessage = await ChatMessage.create(messageData);
+      if (!chatMessage?.id) {
+        throw new Error('ChatMessage.create returned no message');
+      }
+
+      this.auditLog(
+        'narrate',
+        { style: data.style, whisperTo: data.whisperTo, hasSpeaker: !!speakerInput },
+        'success'
+      );
+
+      return { success: true, messageId: chatMessage.id };
+    } catch (error) {
+      this.auditLog(
+        'narrate',
+        { style: data.style, whisperTo: data.whisperTo },
+        'failure',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+      throw new Error(
+        `Failed to post narration: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
 }
 
 // =============================================================================
