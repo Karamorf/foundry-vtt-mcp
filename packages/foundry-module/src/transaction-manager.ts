@@ -156,7 +156,7 @@ export class TransactionManager {
 
       case 'Token':
         // Find token in current scene
-        const scene = (game.scenes as any).current;
+        const scene = (game.scenes as any).current ?? (game.scenes as any).active;
         if (scene) {
           const token = scene.tokens.get(action.entityId);
           if (token) {

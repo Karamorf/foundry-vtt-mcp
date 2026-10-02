@@ -3853,7 +3853,7 @@ export class FoundryDataAccess {
    * Get active scene information
    */
   async getActiveScene(): Promise<SceneInfo> {
-    const scene = (game.scenes as any).current;
+    const scene = (game.scenes as any).current ?? (game.scenes as any).active;
     if (!scene) {
       throw new Error(ERROR_MESSAGES.SCENE_NOT_FOUND);
     }
@@ -5425,7 +5425,7 @@ export class FoundryDataAccess {
     // Audit the permission check
     permissionManager.auditPermissionCheck('modifyScene', permissionCheck, placement);
 
-    const scene = (game.scenes as any).current;
+    const scene = (game.scenes as any).current ?? (game.scenes as any).active;
     if (!scene) {
       throw new Error('No active scene found');
     }
@@ -7989,7 +7989,7 @@ export class FoundryDataAccess {
     }
 
     try {
-      const scene = (game.scenes as any).current;
+      const scene = (game.scenes as any).current ?? (game.scenes as any).active;
       if (!scene) {
         throw new Error('No active scene found');
       }
@@ -8046,7 +8046,7 @@ export class FoundryDataAccess {
     }
 
     try {
-      const scene = (game.scenes as any).current;
+      const scene = (game.scenes as any).current ?? (game.scenes as any).active;
       if (!scene) {
         throw new Error('No active scene found');
       }
@@ -8101,7 +8101,7 @@ export class FoundryDataAccess {
     }
 
     try {
-      const scene = (game.scenes as any).current;
+      const scene = (game.scenes as any).current ?? (game.scenes as any).active;
       if (!scene) {
         throw new Error('No active scene found');
       }
@@ -8155,7 +8155,7 @@ export class FoundryDataAccess {
     this.validateFoundryState();
 
     try {
-      const scene = (game.scenes as any).current;
+      const scene = (game.scenes as any).current ?? (game.scenes as any).active;
       if (!scene) {
         throw new Error('No active scene found');
       }
@@ -8219,7 +8219,7 @@ export class FoundryDataAccess {
     }
 
     try {
-      const scene = (game.scenes as any).current;
+      const scene = (game.scenes as any).current ?? (game.scenes as any).active;
       if (!scene) {
         throw new Error('No active scene found');
       }
