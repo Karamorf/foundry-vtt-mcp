@@ -8101,27 +8101,25 @@ export class FoundryDataAccess {
     }
 
     try {
-      const scene = (game.scenes as any).current;
+      const scene = (game.scenes as any).current ?? (game.scenes as any).active;
       if (!scene) {
         throw new Error('No active scene found');
       }
 
-      const deletedTokens: string[] = [];
-      const failedTokens: string[] = [];
+      // Resolve which requested ids actually exist on the scene before deleting,
+      // since deleteEmbeddedDocuments silently ignores unknown ids.
+      const existingTokenIds = data.tokenIds.filter(tokenId => !!scene.tokens.get(tokenId));
+      const failedTokens = data.tokenIds.filter(tokenId => !scene.tokens.get(tokenId));
 
-      for (const tokenId of data.tokenIds) {
-        try {
-          const token = scene.tokens.get(tokenId);
-          if (token) {
-            await token.delete();
-            deletedTokens.push(tokenId);
-          } else {
-            failedTokens.push(tokenId);
-          }
-        } catch (error) {
-          failedTokens.push(tokenId);
-        }
-      }
+      // Delete via the embedded document API (not token.delete()) so this works
+      // headless: per-token delete() can throw from a canvas-dependent hook even
+      // though the document is removed, which previously made every delete look
+      // like a failure.
+      const deletedDocs =
+        existingTokenIds.length > 0
+          ? await scene.deleteEmbeddedDocuments('Token', existingTokenIds)
+          : [];
+      const deletedTokens: string[] = deletedDocs.map((doc: any) => doc.id);
 
       this.auditLog(
         'deleteTokens',

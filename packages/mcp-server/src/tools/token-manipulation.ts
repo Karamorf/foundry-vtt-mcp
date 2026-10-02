@@ -282,8 +282,8 @@ export class TokenManipulationTools {
       return {
         success: result.success,
         deletedCount: result.deletedCount,
-        tokenIds: result.tokenIds,
-        errors: result.errors,
+        deletedTokens: result.deletedTokens,
+        failedTokens: result.failedTokens,
       };
     } catch (error) {
       this.logger.error('Failed to delete tokens', error);
