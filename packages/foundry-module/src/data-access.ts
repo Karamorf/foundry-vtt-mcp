@@ -341,6 +341,65 @@ interface ItemTargetingResult {
   failed: FailedItemTarget[];
 }
 
+/** Mirrors dnd5e's TargetDescriptor5e (stored in chat message flags.dnd5e.targets). */
+interface ItemTargetDescriptor {
+  name: string;
+  img: string | null;
+  uuid: string;
+  ac: number | null;
+}
+
+interface ItemActivitySummary {
+  id: string;
+  name: string;
+  type: string;
+}
+
+interface ItemAttackResult {
+  total: number;
+  formula: string;
+  targetAC: number | null;
+  hit: boolean | null;
+  isCritical: boolean;
+  isFumble: boolean;
+  messageId: string | null;
+}
+
+interface ItemDamageResult {
+  total: number;
+  types: string[];
+  isCritical: boolean;
+  rolls: Array<{ total: number; formula: string; type: string | null; types: string[] }>;
+  messageId: string | null;
+}
+
+interface UseItemOptions {
+  consume?: boolean | undefined; // Whether to consume charges/uses
+  configureDialog?: boolean | undefined; // Whether to show configuration dialog
+  skipDialog?: boolean | undefined; // Legacy alias of skipDialogs
+  skipDialogs?: boolean | undefined; // dnd5e: run unattended (no dialogs), await and return rolls
+  activity?: string | undefined; // dnd5e: activity id, name or type to use
+  spellLevel?: number | undefined; // For spells: cast at higher level
+  versatile?: boolean | undefined; // For versatile weapons: use versatile damage
+}
+
+interface UseItemResult {
+  success: boolean;
+  status?: string;
+  message: string;
+  itemName?: string;
+  actorName?: string;
+  targets?: string[];
+  targeting: ItemTargetingResult;
+  warnings?: string[];
+  requiresGMInteraction?: boolean;
+  activity?: ItemActivitySummary;
+  attack?: ItemAttackResult;
+  damage?: ItemDamageResult;
+  save?: { dc: number | null; abilities: string[] };
+  messageIds?: string[];
+}
+
 /**
  * Persistent Enhanced Creature Index System
  * Stores pre-computed creature data in JSON file within Foundry world directory for instant filtering
@@ -8352,12 +8411,21 @@ export class FoundryDataAccess {
 
   /**
    * Resolve and apply requested targets without preventing the item workflow on failure.
+   *
+   * Targets are resolved from the scene's TokenDocuments (`game.scenes.current ?? game.scenes.active`)
+   * so this works on a client without a canvas. When a token has a rendered placeable it is also
+   * targeted through the public Token#setTarget API, so the GM sees the targets. In every case a
+   * dnd5e-style target descriptor is returned so callers can pass targets to the system headlessly.
    */
 
   private async applyItemTargets(
     actor: any,
     targets: string[] | undefined
-  ): Promise<{ targeting: ItemTargetingResult; warnings: string[] }> {
+  ): Promise<{
+    targeting: ItemTargetingResult;
+    warnings: string[];
+    descriptors: ItemTargetDescriptor[];
+  }> {
     const targeting: ItemTargetingResult = {
       status: 'not-requested',
       requested: targets ? [...targets] : [],
@@ -8366,37 +8434,41 @@ export class FoundryDataAccess {
       failed: [],
     };
     const warnings: string[] = [];
+    const descriptors: ItemTargetDescriptor[] = [];
 
     if (!targets || targets.length === 0) {
-      return { targeting, warnings };
+      return { targeting, warnings, descriptors };
     }
 
     targeting.status = 'failed';
 
     try {
       const currentCanvas = (globalThis as any).canvas;
-      const scene = currentCanvas?.scene ?? (game.scenes as any)?.active;
+      const scenes = game.scenes as any;
+      const scene = scenes?.current ?? scenes?.active;
       if (!scene) {
         targeting.unresolved.push(...targets);
-        warnings.push('No active canvas scene is available to resolve the requested targets.');
-        return { targeting, warnings };
+        warnings.push('No current or active scene is available to resolve the requested targets.');
+        return { targeting, warnings, descriptors };
       }
 
-      const canvasTokens = Array.from((currentCanvas?.tokens?.placeables ?? []) as any[]);
-      const controlledTokens = Array.from((currentCanvas?.tokens?.controlled ?? []) as any[]);
-      const sceneTokenObjects = Array.from(((scene as any).tokens ?? []) as any[])
-        .map((tokenDocument: any) => tokenDocument?.object)
+      const sceneTokenDocuments: any[] = Array.from((scene.tokens ?? []) as Iterable<any>).filter(
+        Boolean
+      );
+      const controlledTokenDocuments = Array.from(
+        (currentCanvas?.tokens?.controlled ?? []) as any[]
+      )
+        .map((token: any) => token?.document ?? token)
         .filter(Boolean);
 
-      const tokenId = (token: any): string =>
-        String(token?.id ?? token?.document?.id ?? token?.document?._id ?? '');
+      const tokenId = (token: any): string => String(token?.id ?? token?._id ?? '');
       const tokenName = (token: any): string =>
-        String(token?.name ?? token?.document?.name ?? token?.actor?.name ?? 'Unknown Token');
+        String(token?.name ?? token?.actor?.name ?? 'Unknown Token');
       const actingActorId = String(actor?.id ?? '');
       const tokenRepresentsActor = (token: any): boolean =>
         token?.actor === actor ||
         (actingActorId !== '' &&
-          [token?.actor?.id, token?.document?.actorId, token?.actorId].some(
+          [token?.actor?.id, token?.actorId].some(
             candidateId => String(candidateId ?? '') === actingActorId
           ));
       const sortTokens = (tokensToSort: any[]): any[] =>
@@ -8405,17 +8477,8 @@ export class FoundryDataAccess {
           return idComparison !== 0 ? idComparison : tokenName(a).localeCompare(tokenName(b));
         });
 
-      const availableTokens: any[] = [];
-      const seenTokens = new Set<any>();
-      for (const token of [...canvasTokens, ...controlledTokens, ...sceneTokenObjects]) {
-        const identity = tokenId(token) || token;
-        if (!token || seenTokens.has(identity)) continue;
-        seenTokens.add(identity);
-        availableTokens.push(token);
-      }
-
-      const orderedTokens = sortTokens(availableTokens);
-      const orderedControlledTokens = sortTokens(controlledTokens);
+      const orderedTokens = sortTokens(sceneTokenDocuments);
+      const orderedControlledTokens = sortTokens(controlledTokenDocuments);
       const resolvedTargets: Array<{
         identifier: string;
         token: any;
@@ -8445,7 +8508,7 @@ export class FoundryDataAccess {
 
         if (!token) {
           targeting.unresolved.push(identifier);
-          warnings.push(`Target "${identifier}" was not found on the current canvas.`);
+          warnings.push(`Target "${identifier}" was not found in the current scene.`);
           continue;
         }
 
@@ -8460,13 +8523,21 @@ export class FoundryDataAccess {
       let hasAppliedTarget = false;
       for (const resolvedTarget of resolvedTargets) {
         try {
-          if (typeof resolvedTarget.token?.setTarget !== 'function') {
-            throw new Error('Token does not expose the public setTarget API');
+          // Rendered placeable (a canvas is active): target it for the GM to see.
+          // Headless clients have no placeable; the descriptor below carries the target instead.
+          const placeable = resolvedTarget.token?.object;
+          if (placeable) {
+            if (typeof placeable.setTarget !== 'function') {
+              throw new Error('Token does not expose the public setTarget API');
+            }
+            await placeable.setTarget(true, {
+              releaseOthers: !hasAppliedTarget,
+            });
           }
-
-          await resolvedTarget.token.setTarget(true, {
-            releaseOthers: !hasAppliedTarget,
-          });
+          const descriptor = this.toTargetDescriptor(resolvedTarget.token);
+          if (descriptor && !descriptors.some(existing => existing.uuid === descriptor.uuid)) {
+            descriptors.push(descriptor);
+          }
           targeting.applied.push({
             identifier: resolvedTarget.identifier,
             tokenId: resolvedTarget.tokenId,
@@ -8510,7 +8581,25 @@ export class FoundryDataAccess {
       targeting.status = 'failed';
     }
 
-    return { targeting, warnings };
+    return { targeting, warnings, descriptors };
+  }
+
+  /**
+   * Build a dnd5e TargetDescriptor5e ({name, img, uuid, ac}) from a TokenDocument, mirroring
+   * dnd5e's getTargetDescriptors(), which only reads game.user.targets (canvas placeables).
+   */
+  private toTargetDescriptor(tokenDocument: any): ItemTargetDescriptor | null {
+    const targetActor = tokenDocument?.actor;
+    if (!targetActor?.uuid) return null;
+    const acValue = targetActor.statuses?.has?.('coverTotal')
+      ? null
+      : targetActor.system?.attributes?.ac?.value;
+    return {
+      name: String(tokenDocument?.name ?? targetActor.name ?? 'Unknown Token'),
+      img: targetActor.img ?? null,
+      uuid: String(targetActor.uuid),
+      ac: typeof acValue === 'number' ? acValue : null,
+    };
   }
 
   /**
@@ -8521,26 +8610,8 @@ export class FoundryDataAccess {
     actorIdentifier: string;
     itemIdentifier: string;
     targets?: string[] | undefined; // Target character/token names or IDs. "self" targets the caster.
-    options?:
-      | {
-          consume?: boolean | undefined; // Whether to consume charges/uses
-          configureDialog?: boolean | undefined; // Whether to show configuration dialog
-          skipDialog?: boolean | undefined; // Skip confirmation dialogs (default: true for MCP)
-          spellLevel?: number | undefined; // For spells: cast at higher level
-          versatile?: boolean | undefined; // For versatile weapons: use versatile damage
-        }
-      | undefined;
-  }): Promise<{
-    success: boolean;
-    status?: string;
-    message: string;
-    itemName?: string;
-    actorName?: string;
-    targets?: string[];
-    targeting: ItemTargetingResult;
-    warnings?: string[];
-    requiresGMInteraction?: boolean;
-  }> {
+    options?: UseItemOptions | undefined;
+  }): Promise<UseItemResult> {
     this.validateFoundryState();
 
     const { actorIdentifier, itemIdentifier, targets, options = {} } = params;
@@ -8563,8 +8634,24 @@ export class FoundryDataAccess {
     const itemAny = item;
     const systemId = (game.system as any).id;
 
-    const { targeting, warnings } = await this.applyItemTargets(actor, targets);
+    const { targeting, warnings, descriptors } = await this.applyItemTargets(actor, targets);
     const resolvedTargetNames = targeting.applied.map(target => target.tokenName);
+
+    // dnd5e 4.x/5.x: items act through Activities. Route through the activity API so the
+    // activity can be chosen without ActivityChoiceDialog and, on request, run unattended.
+    const dnd5eActivities = systemId === 'dnd5e' ? this.getDnd5eActivities(itemAny) : null;
+    if (dnd5eActivities && dnd5eActivities.length > 0) {
+      return await this.useDnd5eActivity({
+        actor,
+        item: itemAny,
+        activities: dnd5eActivities,
+        options,
+        targeting,
+        warnings,
+        descriptors,
+        resolvedTargetNames,
+      });
+    }
 
     try {
       // For items that may show dialogs (spells with choices, etc.),
@@ -8674,17 +8761,7 @@ export class FoundryDataAccess {
       const targetingWarningInfo =
         warnings.length > 0 ? ` Targeting warning: ${warnings.join(' ')}` : '';
 
-      const result: {
-        success: boolean;
-        status?: string;
-        message: string;
-        itemName?: string;
-        actorName?: string;
-        targets?: string[];
-        targeting: ItemTargetingResult;
-        warnings?: string[];
-        requiresGMInteraction?: boolean;
-      } = {
+      const result: UseItemResult = {
         success: true,
         status: 'initiated',
         message: `Item use initiated for ${actor.name} using ${item.name}${targetInfo}.${targetingWarningInfo} If a dialog appeared in Foundry VTT, the GM should select options and confirm. The result will appear in chat.`,
@@ -8713,6 +8790,336 @@ export class FoundryDataAccess {
         error instanceof Error ? error.message : 'Unknown error'
       );
 
+      throw new Error(
+        `Failed to use item "${item.name}": ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Usable dnd5e Activities on an item, or null when the item has no activity collection
+   * (non-dnd5e items, dnd5e < 4.0).
+   */
+  private getDnd5eActivities(item: any): any[] | null {
+    const collection = item?.system?.activities;
+    if (!collection || typeof collection.values !== 'function') return null;
+    // Same filter dnd5e's Item5e#use applies before choosing an activity.
+    return Array.from(collection.values() as Iterable<any>).filter(
+      (activity: any) => activity && activity.canUse !== false
+    );
+  }
+
+  private describeActivity(activity: any): ItemActivitySummary {
+    return {
+      id: String(activity?.id ?? ''),
+      name: String(activity?.name || activity?.type || ''),
+      type: String(activity?.type ?? ''),
+    };
+  }
+
+  /**
+   * Pick an activity by id, name or type. Without a request, an item with exactly one usable
+   * activity resolves to it; otherwise null (ambiguous). Throws if a request matches none or several.
+   */
+  private selectDnd5eActivity(activities: any[], requested: string | undefined): any {
+    const list = (): string =>
+      activities
+        .map(activity => {
+          const summary = this.describeActivity(activity);
+          return `"${summary.name}" (type ${summary.type}, id ${summary.id})`;
+        })
+        .join(', ');
+
+    if (!requested) {
+      return activities.length === 1 ? activities[0] : null;
+    }
+
+    const normalized = requested.toLowerCase();
+    const byId = activities.find(activity => activity.id === requested);
+    if (byId) return byId;
+
+    for (const matches of [
+      activities.filter(activity => String(activity.name ?? '').toLowerCase() === normalized),
+      activities.filter(activity => String(activity.type ?? '').toLowerCase() === normalized),
+    ]) {
+      if (matches.length === 1) return matches[0];
+      if (matches.length > 1) {
+        throw new Error(
+          `Activity "${requested}" is ambiguous; pass an activity id. Available activities: ${list()}`
+        );
+      }
+    }
+
+    throw new Error(`Activity "${requested}" not found. Available activities: ${list()}`);
+  }
+
+  /**
+   * Use a dnd5e (4.x/5.x) item through its Activity API.
+   *
+   * Default (skipDialogs false) keeps the interactive behaviour: the usage dialog opens for the GM
+   * to confirm and the call returns "initiated". With skipDialogs every step runs with
+   * `{configure:false}`, is awaited, and the rolls are returned. Damage is never applied.
+   */
+  private async useDnd5eActivity(context: {
+    actor: any;
+    item: any;
+    activities: any[];
+    options: UseItemOptions;
+    targeting: ItemTargetingResult;
+    warnings: string[];
+    descriptors: ItemTargetDescriptor[];
+    resolvedTargetNames: string[];
+  }): Promise<UseItemResult> {
+    const { actor, item, activities, options, targeting, warnings, descriptors } = context;
+    const { resolvedTargetNames } = context;
+    const skipDialogs = options.skipDialogs ?? options.skipDialog ?? false;
+    const activity = this.selectDnd5eActivity(activities, options.activity);
+
+    // ActivityUseConfiguration (dnd5e Activity#use / _prepareUsageConfig)
+    const usageConfig: Record<string, any> = {};
+    if (options.consume === false) usageConfig.consume = false;
+    if (options.spellLevel !== undefined) {
+      usageConfig.spell = { slot: `spell${options.spellLevel}` };
+    }
+
+    // Chat message flags: dnd5e reads targets from game.user.targets (canvas placeables), which
+    // is empty on a headless client. Pass the resolved targets explicitly instead.
+    const targetFlags = (extra: Record<string, any> = {}): Record<string, any> => {
+      const dnd5eFlags: Record<string, any> = { ...extra };
+      if (descriptors.length > 0) dnd5eFlags.targets = descriptors;
+      return Object.keys(dnd5eFlags).length > 0 ? { data: { flags: { dnd5e: dnd5eFlags } } } : {};
+    };
+
+    const targetInfo =
+      resolvedTargetNames.length > 0 ? ` targeting ${resolvedTargetNames.join(', ')}` : '';
+    const baseResult = (): UseItemResult => {
+      const result: UseItemResult = {
+        success: true,
+        message: '',
+        itemName: item.name,
+        actorName: actor.name,
+        targeting,
+      };
+      if (activity) result.activity = this.describeActivity(activity);
+      if (resolvedTargetNames.length > 0) result.targets = resolvedTargetNames;
+      return result;
+    };
+
+    try {
+      if (!skipDialogs) {
+        // Upstream default: the GM configures and confirms in Foundry. Don't await; the dialog
+        // blocks the promise until someone clicks it.
+        const pending = activity
+          ? activity.use(usageConfig, {}, targetFlags())
+          : item.use(usageConfig, {}, targetFlags());
+        Promise.resolve(pending).catch((err: Error) => {
+          console.error(`[foundry-mcp-bridge] Error using item ${item.name}:`, err);
+        });
+
+        this.auditLog(
+          'useItem',
+          {
+            actorId: actor.id,
+            itemId: item.id,
+            itemName: item.name,
+            activityId: activity?.id,
+            targets: resolvedTargetNames,
+            targetingStatus: targeting.status,
+            targetingWarnings: warnings,
+          },
+          'success'
+        );
+
+        const warningInfo = warnings.length > 0 ? ` Targeting warning: ${warnings.join(' ')}` : '';
+        const result = baseResult();
+        result.status = 'initiated';
+        result.requiresGMInteraction = true;
+        result.message = `Item use initiated for ${actor.name} using ${item.name}${targetInfo}.${warningInfo} If a dialog appeared in Foundry VTT, the GM should select options and confirm. The result will appear in chat. Pass skipDialogs: true to run unattended and get the rolls back.`;
+        if (warnings.length > 0) result.warnings = warnings;
+        return result;
+      }
+
+      if (!activity) {
+        throw new Error(
+          `Item "${item.name}" has ${activities.length} activities; pass "activity" (id, name or type) to choose one: ${activities
+            .map(candidate => {
+              const summary = this.describeActivity(candidate);
+              return `"${summary.name}" (type ${summary.type}, id ${summary.id})`;
+            })
+            .join(', ')}`
+        );
+      }
+
+      // Unattended: no usage dialog, no automatic follow-up roll (it would open a roll dialog and
+      // isn't awaited by dnd5e), and no measured template (placement needs a canvas).
+      usageConfig.subsequentActions = false;
+      usageConfig.create = { measuredTemplate: false };
+      if (activity.target?.template?.type) {
+        warnings.push(
+          'Area template was not placed (requires an interactive canvas); place it manually if needed.'
+        );
+      }
+
+      const usage = await activity.use(usageConfig, { configure: false }, targetFlags());
+      if (!usage) {
+        throw new Error(
+          `dnd5e did not use activity "${this.describeActivity(activity).name}" (it may be unusable, out of uses/slots, or blocked by a module hook)`
+        );
+      }
+
+      const messageIds: string[] = [];
+      const usageMessageId: string | null = usage.message?.id ?? null;
+      if (usageMessageId) messageIds.push(usageMessageId);
+      const rollMessage = (): Record<string, any> =>
+        targetFlags(usageMessageId ? { originatingMessage: usageMessageId } : {});
+
+      const result = baseResult();
+      const summaries: string[] = [];
+
+      let attackRoll: any = null;
+      if (activity.type === 'attack' && typeof activity.rollAttack === 'function') {
+        const attackConfig: Record<string, any> = {};
+        if (descriptors.length === 1 && descriptors[0]?.ac !== null) {
+          attackConfig.target = descriptors[0]?.ac;
+        }
+        const attackRolls = await activity.rollAttack(
+          attackConfig,
+          { configure: false },
+          rollMessage()
+        );
+        attackRoll = attackRolls?.[0] ?? null;
+        if (attackRoll) {
+          const targetAC = Number.isFinite(Number(attackRoll.options?.target))
+            ? Number(attackRoll.options.target)
+            : null;
+          const isCritical = attackRoll.isCritical === true;
+          const isFumble = attackRoll.isFumble === true;
+          const hit =
+            targetAC === null
+              ? null
+              : isCritical
+                ? true
+                : isFumble
+                  ? false
+                  : attackRoll.total >= targetAC;
+          const messageId: string | null = attackRoll.parent?.id ?? null;
+          if (messageId) messageIds.push(messageId);
+          result.attack = {
+            total: attackRoll.total,
+            formula: String(attackRoll.formula ?? ''),
+            targetAC,
+            hit,
+            isCritical,
+            isFumble,
+            messageId,
+          };
+          const critLabel = isCritical ? ' (critical)' : isFumble ? ' (fumble)' : '';
+          const versus = targetAC === null ? '' : ` vs AC ${targetAC}: ${hit ? 'hit' : 'miss'}`;
+          summaries.push(`attack ${attackRoll.total}${critLabel}${versus}`);
+        } else {
+          warnings.push('The attack roll was cancelled by dnd5e or a module hook.');
+        }
+      }
+
+      const rollsDamage =
+        typeof activity.rollDamage === 'function' &&
+        (activity.type === 'damage' ||
+          activity.type === 'heal' ||
+          (activity.type === 'save' && (activity.damage?.parts?.length ?? 0) > 0) ||
+          (activity.type === 'attack' && attackRoll && result.attack?.hit !== false));
+
+      if (activity.type === 'attack' && result.attack?.hit === false) {
+        summaries.push('no damage rolled (miss)');
+      }
+
+      if (rollsDamage) {
+        const damageConfig: Record<string, any> = {};
+        if (attackRoll) {
+          damageConfig.isCritical = attackRoll.isCritical === true;
+          if (attackRoll.options?.attackMode) {
+            damageConfig.attackMode = attackRoll.options.attackMode;
+          }
+          const ammunition = attackRoll.options?.ammunition
+            ? actor.items?.get?.(attackRoll.options.ammunition)
+            : undefined;
+          if (ammunition) damageConfig.ammunition = ammunition;
+        }
+        const damageRolls = await activity.rollDamage(
+          damageConfig,
+          { configure: false },
+          rollMessage()
+        );
+        if (damageRolls?.length) {
+          const rolls: ItemDamageResult['rolls'] = damageRolls.map((roll: any) => ({
+            total: roll.total,
+            formula: String(roll.formula ?? ''),
+            type: roll.options?.type ?? null,
+            types: Array.isArray(roll.options?.types)
+              ? roll.options.types.map(String)
+              : roll.options?.type
+                ? [String(roll.options.type)]
+                : [],
+          }));
+          const total = rolls.reduce((sum, damageRoll) => sum + damageRoll.total, 0);
+          const types: string[] = [];
+          for (const damageRoll of rolls) {
+            if (damageRoll.type && !types.includes(damageRoll.type)) types.push(damageRoll.type);
+          }
+          const messageId: string | null = damageRolls[0]?.parent?.id ?? null;
+          if (messageId) messageIds.push(messageId);
+          result.damage = {
+            total,
+            types,
+            isCritical: damageRolls.some((roll: any) => roll.isCritical === true),
+            rolls,
+            messageId,
+          };
+          summaries.push(
+            `${activity.type === 'heal' ? 'healing' : 'damage'} ${total}${types.length ? ` ${types.join('/')}` : ''}`
+          );
+        }
+      }
+
+      if (activity.type === 'save') {
+        const dc = Number(activity.save?.dc?.value);
+        result.save = {
+          dc: Number.isFinite(dc) ? dc : null,
+          abilities: Array.from((activity.save?.ability ?? []) as Iterable<string>).map(String),
+        };
+        summaries.push(
+          `save DC ${result.save.dc ?? '?'} ${result.save.abilities.join('/')}`.trim()
+        );
+      }
+
+      this.auditLog(
+        'useItem',
+        {
+          actorId: actor.id,
+          itemId: item.id,
+          itemName: item.name,
+          activityId: activity.id,
+          targets: resolvedTargetNames,
+          targetingStatus: targeting.status,
+          skipDialogs: true,
+        },
+        'success'
+      );
+
+      const summary = this.describeActivity(activity);
+      result.status = 'completed';
+      result.requiresGMInteraction = false;
+      result.messageIds = messageIds;
+      const outcome = summaries.length > 0 ? `: ${summaries.join('; ')}.` : '.';
+      result.message = `${actor.name} used ${item.name} (${summary.name})${targetInfo}${outcome} Damage was not applied.`;
+      if (warnings.length > 0) result.warnings = warnings;
+      return result;
+    } catch (error) {
+      this.auditLog(
+        'useItem',
+        { actorId: actor.id, itemId: item.id, activityId: activity?.id },
+        'failure',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
       throw new Error(
         `Failed to use item "${item.name}": ${error instanceof Error ? error.message : 'Unknown error'}`
       );

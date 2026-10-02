@@ -111,7 +111,11 @@ export class CharacterTools {
       {
         name: 'use-item',
         description:
-          'Use an item on a character (cast spell, use ability, activate feature, consume item). Opens the item dialog in Foundry VTT for the GM to configure options and confirm. Optionally specify targets by name. Returns immediately with status "initiated" - tell the user to check Foundry for any dialogs. Works across systems: D&D 5e, PF2e, DSA5. Use get-character or search-character-items first to see available items/spells.',
+          'Use an item on a character (cast spell, use ability, activate feature, consume item). GM-only: the Foundry client running the bridge must be logged in as a GM. ' +
+          'Default: opens the item dialog in Foundry VTT for the GM to configure options and confirm, and returns immediately with status "initiated" - tell the user to check Foundry for any dialogs. ' +
+          'D&D 5e (4.x/5.x): items have activities (attack, save, damage, heal, utility...). Pick one with "activity" (id, name or type such as "attack"); needed when an item has several. ' +
+          'Set skipDialogs: true for unattended use (no GM at the table, headless client): no dialogs open, the activity is used, attack and damage are rolled with D&D 5e math, and the call returns status "completed" with the attack total, hit/miss vs the target AC (when exactly one target), damage total and types, and chat message ids. Damage is never applied to targets. ' +
+          'Optionally specify targets by name or token ID (resolved from the current/active scene). Works across systems: D&D 5e, PF2e, DSA5. Use get-character or search-character-items first to see available items/spells.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -136,6 +140,16 @@ export class CharacterTools {
             spellLevel: {
               type: 'number',
               description: 'For spells: cast at a higher level than base (D&D 5e upcasting)',
+            },
+            activity: {
+              type: 'string',
+              description:
+                'D&D 5e: activity to use, by id, name or type (e.g. "attack", "save"). Optional when the item has exactly one activity.',
+            },
+            skipDialogs: {
+              type: 'boolean',
+              description:
+                'D&D 5e: run unattended without any dialog, await the result and return the rolls (default: false, the GM confirms in a Foundry dialog)',
             },
           },
           required: ['actorIdentifier', 'itemIdentifier'],
@@ -439,11 +453,22 @@ export class CharacterTools {
       targets: z.array(z.string()).optional(),
       consume: z.boolean().optional(),
       spellLevel: z.number().optional(),
-      skipDialog: z.boolean().optional(),
+      activity: z.string().min(1).optional(),
+      skipDialogs: z.boolean().optional(),
+      skipDialog: z.boolean().optional(), // legacy alias of skipDialogs
     });
 
-    const { actorIdentifier, itemIdentifier, targets, consume, spellLevel, skipDialog } =
-      schema.parse(args);
+    const {
+      actorIdentifier,
+      itemIdentifier,
+      targets,
+      consume,
+      spellLevel,
+      activity,
+      skipDialogs,
+      skipDialog,
+    } = schema.parse(args);
+    const unattended = skipDialogs ?? skipDialog ?? false;
 
     this.logger.info('Using item', {
       actorIdentifier,
@@ -451,7 +476,8 @@ export class CharacterTools {
       targets,
       consume,
       spellLevel,
-      skipDialog,
+      activity,
+      skipDialogs: unattended,
     });
 
     try {
@@ -462,7 +488,9 @@ export class CharacterTools {
         options: {
           consume: consume ?? true,
           spellLevel,
-          skipDialog: skipDialog ?? true, // Default to skipping dialogs for MCP automation
+          activity,
+          // Upstream default keeps the GM confirmation dialog; unattended clients opt in.
+          skipDialogs: unattended,
         },
       });
 

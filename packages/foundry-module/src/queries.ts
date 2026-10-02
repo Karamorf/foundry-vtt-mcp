@@ -1599,6 +1599,9 @@ export class QueryHandlers {
     options?: {
       consume?: boolean;
       configureDialog?: boolean;
+      skipDialog?: boolean;
+      skipDialogs?: boolean;
+      activity?: string;
       spellLevel?: number;
       versatile?: boolean;
     };
