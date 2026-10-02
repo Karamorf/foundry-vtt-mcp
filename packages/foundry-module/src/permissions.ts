@@ -42,6 +42,13 @@ export class PermissionManager {
       settingKey: 'allowWriteOperations',
       requiresGM: false,
     },
+    createScene: {
+      name: 'Create Scene',
+      level: PERMISSION_LEVELS.MEDIUM_RISK,
+      description: 'Create a new scene from a background image',
+      settingKey: 'allowWriteOperations',
+      requiresGM: true,
+    },
     bulkOperations: {
       name: 'Bulk Operations',
       level: PERMISSION_LEVELS.MEDIUM_RISK,

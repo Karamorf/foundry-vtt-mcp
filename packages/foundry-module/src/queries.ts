@@ -45,6 +45,8 @@ export class QueryHandlers {
     CONFIG.queries[`${modulePrefix}.list-scenes`] = this.handleListScenes.bind(this);
     CONFIG.queries[`${modulePrefix}.switch-scene`] = this.handleSwitchScene.bind(this);
     CONFIG.queries[`${modulePrefix}.update-scene-music`] = this.handleUpdateSceneMusic.bind(this);
+    CONFIG.queries[`${modulePrefix}.create-scene`] = this.handleCreateScene.bind(this);
+    CONFIG.queries[`${modulePrefix}.list-map-images`] = this.handleListMapImages.bind(this);
     CONFIG.queries[`${modulePrefix}.manage-playlists`] = this.handleManagePlaylists.bind(this);
     CONFIG.queries[`${modulePrefix}.control-playlist`] = this.handleControlPlaylist.bind(this);
 
@@ -1124,6 +1126,49 @@ export class QueryHandlers {
     } catch (error) {
       throw new Error(
         `Failed to update scene music: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  private async handleCreateScene(data: any): Promise<any> {
+    try {
+      // SECURITY: Silent GM validation
+      const gmCheck = this.validateGMAccess();
+      if (!gmCheck.allowed) {
+        return { error: 'Access denied', success: false };
+      }
+
+      this.dataAccess.validateFoundryState();
+
+      if (!data?.name) {
+        throw new Error('name is required');
+      }
+      if (!data?.backgroundPath) {
+        throw new Error('backgroundPath is required');
+      }
+
+      return await this.dataAccess.createScene(data);
+    } catch (error) {
+      throw new Error(
+        `Failed to create scene: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  private async handleListMapImages(data: any): Promise<any> {
+    try {
+      // SECURITY: Silent GM validation
+      const gmCheck = this.validateGMAccess();
+      if (!gmCheck.allowed) {
+        return { error: 'Access denied', success: false };
+      }
+
+      this.dataAccess.validateFoundryState();
+
+      return await this.dataAccess.listMapImages(data || {});
+    } catch (error) {
+      throw new Error(
+        `Failed to list map images: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
