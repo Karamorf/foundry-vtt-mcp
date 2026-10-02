@@ -11188,6 +11188,345 @@ export class FoundryDataAccess {
   }
 
   // ─── mgt2e ──────────────────────────────────────────────────────────────────
+
+  // ─── Combat ─────────────────────────────────────────────────────────────────
+  //
+  // Headless-safe: combats are looked up by scene, never through
+  // game.combats.active / viewed (both depend on the viewed scene, which is null
+  // without a canvas), and nothing here opens a Dialog. In particular, ending a
+  // combat deletes the document directly because Combat#endCombat asks for
+  // confirmation in a DialogV2.
+
+  /**
+   * Resolve the scene to run combat on: an explicit id/name, else the viewed
+   * scene, else the active scene.
+   */
+  private resolveCombatScene(sceneId?: string): any {
+    const scenes = (game as any).scenes;
+    if (sceneId) {
+      const scene = scenes.get(sceneId) ?? scenes.getName?.(sceneId);
+      if (!scene) throw new Error(`Scene not found: ${sceneId}`);
+      return scene;
+    }
+    const scene = scenes.current ?? scenes.active;
+    if (!scene) throw new Error('No current or active scene found');
+    return scene;
+  }
+
+  /**
+   * All combats that belong to a scene: linked to it, or unlinked but holding
+   * combatants from it. Ordered so the most relevant (started, then active)
+   * combat comes first.
+   */
+  private findSceneCombats(scene: any): any[] {
+    const combats: any[] =
+      (game as any).combats?.filter?.((combat: any) => {
+        if (combat.scene) return combat.scene.id === scene.id;
+        return combat.combatants?.some?.((c: any) => c.sceneId === scene.id) ?? false;
+      }) ?? [];
+    const rank = (c: any) => (c.started ? 2 : 0) + (c.active ? 1 : 0);
+    return [...combats].sort((a, b) => rank(b) - rank(a));
+  }
+
+  /**
+   * Resolve the combat to act on, by explicit combat id or by scene.
+   */
+  private resolveCombat(data: { sceneId?: string; combatId?: string }): {
+    scene: any;
+    combat: any;
+  } {
+    if (data.combatId) {
+      const combat = (game as any).combats?.get(data.combatId);
+      if (!combat) throw new Error(`Combat not found: ${data.combatId}`);
+      return { scene: combat.scene ?? null, combat };
+    }
+    const scene = this.resolveCombatScene(data.sceneId);
+    return { scene, combat: this.findSceneCombats(scene)[0] ?? null };
+  }
+
+  private serializeCombatant(combatant: any, index: number, currentId: string | null): any {
+    const actor = combatant.actor ?? null;
+    const token = combatant.token ?? null;
+    const attributes = actor?.system?.attributes ?? {};
+    const hp = attributes.hp;
+    const dispositionLabels: Record<string, string> = {
+      '-2': 'secret',
+      '-1': 'hostile',
+      '0': 'neutral',
+      '1': 'friendly',
+    };
+    const disposition = typeof token?.disposition === 'number' ? token.disposition : null;
+    const entry: any = {
+      turnIndex: index,
+      isCurrent: combatant.id === currentId,
+      combatantId: combatant.id,
+      name: combatant.name,
+      actorId: combatant.actorId ?? null,
+      tokenId: combatant.tokenId ?? null,
+      actorType: actor?.type ?? null,
+      isNPC: !!combatant.isNPC,
+      initiative: combatant.initiative ?? null,
+      hp: hp
+        ? {
+            value: hp.value ?? null,
+            max: hp.max ?? null,
+            temp: hp.temp || 0,
+          }
+        : null,
+      ac: attributes.ac?.value ?? null,
+      statuses: Array.from(actor?.statuses ?? []),
+      defeated: !!(combatant.isDefeated ?? combatant.defeated),
+      hidden: !!combatant.hidden,
+      disposition,
+      dispositionLabel: disposition === null ? null : (dispositionLabels[disposition] ?? 'unknown'),
+      position: token ? { x: token.x, y: token.y } : null,
+    };
+    const death = attributes.death;
+    if (actor?.type === 'character' && hp && hp.value <= 0 && death) {
+      entry.deathSaves = { success: death.success ?? 0, failure: death.failure ?? 0 };
+    }
+    return entry;
+  }
+
+  /**
+   * Serialize a combat into the state Claude needs to decide the next action.
+   */
+  serializeCombatState(combat: any): any {
+    const turns: any[] = combat.turns?.length
+      ? combat.turns
+      : (combat.combatants?.contents ?? Array.from(combat.combatants ?? []));
+    const current = combat.combatant ?? null;
+    const currentId = current?.id ?? null;
+    const combatants = turns.map((c: any, i: number) => this.serializeCombatant(c, i, currentId));
+    const next = combat.started ? (combat.nextCombatant ?? null) : null;
+    return {
+      combatId: combat.id,
+      scene: combat.scene ? { id: combat.scene.id, name: combat.scene.name } : null,
+      round: combat.round,
+      turn: combat.turn,
+      started: !!combat.started,
+      active: !!combat.active,
+      current: combatants.find(c => c.isCurrent) ?? null,
+      next: next ? { combatantId: next.id, name: next.name } : null,
+      combatants,
+    };
+  }
+
+  /**
+   * Create a combat on a scene, add tokens as combatants, roll dnd5e/system
+   * initiative and start round 1.
+   */
+  async startCombat(data: {
+    sceneId?: string;
+    tokenIds?: string[];
+    rollInitiative?: boolean;
+    replace?: boolean;
+  }): Promise<any> {
+    this.validateFoundryState();
+
+    const permissionCheck = permissionManager.checkWritePermission('startCombat', {
+      ...(data.tokenIds ? { targetIds: data.tokenIds } : {}),
+    });
+    if (!permissionCheck.allowed) {
+      throw new Error(`${ERROR_MESSAGES.ACCESS_DENIED}: ${permissionCheck.reason}`);
+    }
+
+    let combat: any = null;
+    try {
+      const scene = this.resolveCombatScene(data.sceneId);
+      const existing = this.findSceneCombats(scene);
+      if (existing.length > 0 && !data.replace) {
+        throw new Error(
+          `Scene "${scene.name}" already has a combat (${existing.map(c => c.id).join(', ')}). ` +
+            'Use get-combat-state to inspect it, end-combat to remove it, or pass replace:true.'
+        );
+      }
+
+      // Resolve tokens before touching anything, so a bad id doesn't delete the old combat
+      let tokens: any[];
+      if (data.tokenIds && data.tokenIds.length > 0) {
+        const missing: string[] = [];
+        tokens = [];
+        for (const id of data.tokenIds) {
+          const token = scene.tokens.get(id);
+          if (token) tokens.push(token);
+          else missing.push(id);
+        }
+        if (missing.length > 0) {
+          throw new Error(`Tokens not found on scene "${scene.name}": ${missing.join(', ')}`);
+        }
+      } else {
+        tokens = scene.tokens?.contents ?? Array.from(scene.tokens ?? []);
+      }
+      if (tokens.length === 0) {
+        throw new Error(`Scene "${scene.name}" has no tokens to add to combat`);
+      }
+
+      const replaced: string[] = [];
+      for (const old of existing) {
+        await old.delete();
+        replaced.push(old.id);
+      }
+
+      const CombatClass = (foundry.utils as any).getDocumentClass('Combat');
+      combat = await CombatClass.create({ scene: scene.id, active: true }, { render: false });
+      if (!combat) throw new Error('Combat creation was cancelled');
+
+      // Same shape core TokenDocument.createCombatants uses
+      const combatantData = tokens.map((token: any) => ({
+        tokenId: token.id,
+        sceneId: scene.id,
+        actorId: token.actorId,
+        hidden: token.hidden,
+      }));
+      await combat.createEmbeddedDocuments('Combatant', combatantData);
+
+      // Combat#rollAll -> Combat5e#rollInitiative -> Combatant5e#getInitiativeRoll
+      // -> Actor5e#getInitiativeRoll: builds the dnd5e D20Roll (Dex/init mod,
+      // bonuses, advantage) and evaluates it without a configuration dialog.
+      const rollInitiative = data.rollInitiative !== false;
+      if (rollInitiative) await combat.rollAll();
+
+      await combat.startCombat();
+
+      this.auditLog('startCombat', data, 'success');
+      return {
+        success: true,
+        initiativeRolled: rollInitiative,
+        replacedCombatIds: replaced,
+        ...this.serializeCombatState(combat),
+      };
+    } catch (error) {
+      // Don't leave a half-built encounter behind
+      if (combat && (game as any).combats?.get(combat.id)) {
+        try {
+          await combat.delete();
+        } catch {
+          // ignore cleanup failure, report the original error
+        }
+      }
+      this.auditLog(
+        'startCombat',
+        data,
+        'failure',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+      throw new Error(
+        `Failed to start combat: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Advance (or rewind) the scene's combat by a turn or a round.
+   */
+  async advanceCombat(data: {
+    sceneId?: string;
+    combatId?: string;
+    previous?: boolean;
+    round?: boolean;
+  }): Promise<any> {
+    this.validateFoundryState();
+
+    const permissionCheck = permissionManager.checkWritePermission('advanceCombat');
+    if (!permissionCheck.allowed) {
+      throw new Error(`${ERROR_MESSAGES.ACCESS_DENIED}: ${permissionCheck.reason}`);
+    }
+
+    try {
+      const { scene, combat } = this.resolveCombat(data);
+      if (!combat) throw new Error(`No combat found on scene "${scene?.name}"`);
+
+      const from = {
+        round: combat.round,
+        turn: combat.turn,
+        combatant: combat.combatant?.name ?? null,
+      };
+
+      let action: string;
+      if (data.round) {
+        action = data.previous ? 'previousRound' : 'nextRound';
+      } else {
+        action = data.previous ? 'previousTurn' : 'nextTurn';
+      }
+      await combat[action]();
+
+      this.auditLog('advanceCombat', { ...data, action }, 'success');
+      return {
+        success: true,
+        action,
+        from,
+        ...this.serializeCombatState(combat),
+      };
+    } catch (error) {
+      this.auditLog(
+        'advanceCombat',
+        data,
+        'failure',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+      throw new Error(
+        `Failed to advance combat: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * End the scene's combat by deleting it. Combat#endCombat is deliberately
+   * not used: it opens a confirmation DialogV2, which hangs an unattended client.
+   */
+  async endCombat(data: { sceneId?: string; combatId?: string }): Promise<any> {
+    this.validateFoundryState();
+
+    const permissionCheck = permissionManager.checkWritePermission('endCombat');
+    if (!permissionCheck.allowed) {
+      throw new Error(`${ERROR_MESSAGES.ACCESS_DENIED}: ${permissionCheck.reason}`);
+    }
+
+    try {
+      const { scene, combat } = this.resolveCombat(data);
+      if (!combat) throw new Error(`No combat found on scene "${scene?.name}"`);
+
+      const summary = {
+        combatId: combat.id,
+        scene: combat.scene ? { id: combat.scene.id, name: combat.scene.name } : null,
+        finalRound: combat.round,
+        combatantCount: combat.combatants?.size ?? 0,
+      };
+      await combat.delete();
+
+      this.auditLog('endCombat', data, 'success');
+      return { success: true, deleted: true, ...summary };
+    } catch (error) {
+      this.auditLog(
+        'endCombat',
+        data,
+        'failure',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+      throw new Error(
+        `Failed to end combat: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Read the scene's combat state. Returns inCombat:false rather than an error
+   * when the scene has no combat.
+   */
+  async getCombatState(data: { sceneId?: string; combatId?: string }): Promise<any> {
+    this.validateFoundryState();
+
+    const { scene, combat } = this.resolveCombat(data);
+    if (!combat) {
+      return {
+        success: true,
+        inCombat: false,
+        scene: scene ? { id: scene.id, name: scene.name } : null,
+      };
+    }
+    return { success: true, inCombat: true, ...this.serializeCombatState(combat) };
+  }
 }
 
 // =============================================================================

@@ -47,6 +47,8 @@ import { DnD5eAddFeatureTool } from './tools/dnd5e/add-feature.js';
 import { DnD5eNpcTools } from './tools/dnd5e/npc.js';
 import { DnD5eFeaturesFromCompendiumTools } from './tools/dnd5e/features.js';
 
+import { CombatTools } from './tools/combat.js';
+
 const CONTROL_HOST = '127.0.0.1';
 
 const CONTROL_PORT = 31414;
@@ -1221,6 +1223,8 @@ async function startBackend(): Promise<void> {
   const wfrp4eUpdateActorTools = new WFRP4eUpdateActorTools({ foundryClient, logger });
   const wfrp4eAddItemsTools = new WFRP4eAddItemsTools({ foundryClient, logger });
 
+  const combatTools = new CombatTools({ foundryClient, logger });
+
   // Initialize mapgen-style backend components for map generation
   let mapGenerationJobQueue: any = null;
   let mapGenerationComfyUIClient: any = null;
@@ -1451,6 +1455,8 @@ async function startBackend(): Promise<void> {
     ...mapGenerationTools.getToolDefinitions(),
 
     ...playlistTools.getToolDefinitions(),
+
+    ...combatTools.getToolDefinitions(),
   ];
 
   // Start Foundry connector (owns app port 31415)
@@ -1782,6 +1788,28 @@ async function startBackend(): Promise<void> {
 
                 case 'update-scene-music':
                   result = await sceneTools.handleUpdateSceneMusic(args);
+
+                  break;
+
+                // Combat tools
+
+                case 'start-combat':
+                  result = await combatTools.handleStartCombat(args);
+
+                  break;
+
+                case 'next-turn':
+                  result = await combatTools.handleNextTurn(args);
+
+                  break;
+
+                case 'end-combat':
+                  result = await combatTools.handleEndCombat(args);
+
+                  break;
+
+                case 'get-combat-state':
+                  result = await combatTools.handleGetCombatState(args);
 
                   break;
 
