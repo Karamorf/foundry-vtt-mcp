@@ -4,7 +4,11 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+
+import * as http from 'http';
 
 import { config } from './config.js';
 
@@ -23,6 +27,10 @@ import * as path from 'path';
 const CONTROL_HOST = '127.0.0.1';
 
 const CONTROL_PORT = 31414;
+
+const MCP_TRANSPORT = process.env.MCP_TRANSPORT || 'stdio';
+
+const MCP_HTTP_PORT = parseInt(process.env.MCP_HTTP_PORT || '3001', 10);
 
 type BackendReq = { id: string; method: string; params?: any };
 
@@ -303,22 +311,7 @@ async function startWrapper() {
     } catch {}
   }
 
-  const mcp = new Server(
-    { name: config.server.name, version: config.server.version },
-    { capabilities: { tools: {} } }
-  );
-
-  // Setup cleanup handlers - cross-platform approach
-
-  // When stdin closes (Claude Desktop exits), clean up the backend
-
-  process.stdin.on('end', () => {
-    backend.cleanup();
-
-    process.exit(0);
-  });
-
-  // Also handle process termination signals
+  // Termination signal handlers (always active)
 
   process.on('SIGTERM', () => {
     backend.cleanup();
@@ -332,47 +325,99 @@ async function startWrapper() {
     process.exit(0);
   });
 
-  mcp.setRequestHandler(ListToolsRequestSchema, async () => {
-    try {
-      const res = await backend.send('list_tools', {});
+  // An SDK Server holds one transport at a time, so HTTP mode builds one per SSE client.
+  const buildServer = () => {
+    const mcp = new Server(
+      { name: config.server.name, version: config.server.version },
+      { capabilities: { tools: {} } }
+    );
+
+    mcp.setRequestHandler(ListToolsRequestSchema, async () => {
+      try {
+        const res = await backend.send('list_tools', {});
+
+        try {
+          (backend as any).log?.('ListTools handler: received from backend', {
+            hasTools: !!res.tools,
+            toolCount: res.tools?.length || 0,
+          });
+        } catch {}
+
+        return { tools: res.tools || [] };
+      } catch (e) {
+        // Log but return empty to remain MCP-compliant
+
+        try {
+          (backend as any).log?.('ListTools failed; returning empty', {
+            error: (e as any)?.message,
+          });
+        } catch {}
+
+        return { tools: [] };
+      }
+    });
+
+    mcp.setRequestHandler(CallToolRequestSchema, async request => {
+      const { name, arguments: args } = request.params as any;
 
       try {
-        (backend as any).log?.('ListTools handler: received from backend', {
-          hasTools: !!res.tools,
-          toolCount: res.tools?.length || 0,
-        });
-      } catch {}
+        const res = await backend.send('call_tool', { name, args: args ?? {} });
 
-      return { tools: res.tools || [] };
-    } catch (e) {
-      // Log but return empty to remain MCP-compliant
+        return res;
+      } catch (e: any) {
+        return {
+          content: [{ type: 'text', text: `Error: ${e?.message || 'Backend unavailable'}` }],
+          isError: true,
+        } as any;
+      }
+    });
 
-      try {
-        (backend as any).log?.('ListTools failed; returning empty', { error: (e as any)?.message });
-      } catch {}
+    return mcp;
+  };
 
-      return { tools: [] };
-    }
-  });
+  if (MCP_TRANSPORT === 'http') {
+    // HTTP/SSE mode — persistent network service, no stdin dependency
+    const activeTransports = new Map<string, SSEServerTransport>();
 
-  mcp.setRequestHandler(CallToolRequestSchema, async request => {
-    const { name, arguments: args } = request.params as any;
+    const httpServer = http.createServer(async (req, res) => {
+      if (req.method === 'GET' && req.url === '/sse') {
+        const transport = new SSEServerTransport('/messages', res);
 
-    try {
-      const res = await backend.send('call_tool', { name, args: args ?? {} });
+        activeTransports.set(transport.sessionId, transport);
 
-      return res;
-    } catch (e: any) {
-      return {
-        content: [{ type: 'text', text: `Error: ${e?.message || 'Backend unavailable'}` }],
-        isError: true,
-      } as any;
-    }
-  });
+        transport.onclose = () => activeTransports.delete(transport.sessionId);
 
-  const transport = new StdioServerTransport();
+        await buildServer().connect(transport);
+      } else if (req.method === 'POST' && req.url?.startsWith('/messages')) {
+        const sessionId = new URL(req.url, `http://localhost`).searchParams.get('sessionId') ?? '';
 
-  await mcp.connect(transport);
+        const transport = activeTransports.get(sessionId);
+
+        if (transport) {
+          await transport.handlePostMessage(req, res);
+        } else {
+          res.writeHead(404).end('Session not found');
+        }
+      } else {
+        res.writeHead(404).end();
+      }
+    });
+
+    httpServer.listen(MCP_HTTP_PORT, '0.0.0.0', () => {
+      process.stderr.write(`[mcp] HTTP/SSE listening on 0.0.0.0:${MCP_HTTP_PORT}\n`);
+    });
+  } else {
+    // Stdio mode (default) — Claude Desktop spawns this as a subprocess
+    process.stdin.on('end', () => {
+      backend.cleanup();
+
+      process.exit(0);
+    });
+
+    const transport = new StdioServerTransport();
+
+    await buildServer().connect(transport);
+  }
 }
 
 startWrapper().catch(err => {
