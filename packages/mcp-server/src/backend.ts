@@ -41,6 +41,8 @@ import { MapGenerationTools } from './tools/map-generation.js';
 
 import { TokenManipulationTools } from './tools/token-manipulation.js';
 
+import { EvaluateTools } from './tools/evaluate.js';
+
 import { DSA5CharacterCreator } from './systems/dsa5/character-creator.js';
 
 import { DnD5eAddFeatureTool } from './tools/dnd5e/add-feature.js';
@@ -1218,6 +1220,8 @@ async function startBackend(): Promise<void> {
 
   const tokenManipulationTools = new TokenManipulationTools({ foundryClient, logger });
 
+  const evaluateTools = new EvaluateTools({ foundryClient, logger });
+
   const wfrp4eUpdateActorTools = new WFRP4eUpdateActorTools({ foundryClient, logger });
   const wfrp4eAddItemsTools = new WFRP4eAddItemsTools({ foundryClient, logger });
 
@@ -1447,6 +1451,8 @@ async function startBackend(): Promise<void> {
     ...wfrp4eAddItemsTools.getToolDefinitions(),
 
     ...tokenManipulationTools.getToolDefinitions(),
+
+    ...evaluateTools.getToolDefinitions(),
 
     ...mapGenerationTools.getToolDefinitions(),
 
@@ -1738,6 +1744,13 @@ async function startBackend(): Promise<void> {
 
                 case 'get-available-conditions':
                   result = await tokenManipulationTools.handleGetAvailableConditions(args);
+
+                  break;
+
+                // Evaluate escape hatch
+
+                case 'evaluate':
+                  result = await evaluateTools.handleEvaluate(args);
 
                   break;
 

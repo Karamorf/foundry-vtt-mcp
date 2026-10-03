@@ -163,6 +163,9 @@ export class QueryHandlers {
     CONFIG.queries[`${modulePrefix}.addSpellsToActor`] = this.handleAddSpellsToActor.bind(this);
     CONFIG.queries[`${modulePrefix}.addFeaturesFromCompendium`] =
       this.handleAddFeaturesFromCompendium.bind(this);
+
+    // Escape hatch: run arbitrary JavaScript against the live client
+    CONFIG.queries[`${modulePrefix}.evaluate`] = this.handleEvaluate.bind(this);
   }
 
   /**
@@ -2191,5 +2194,23 @@ export class QueryHandlers {
     if (!gmCheck.allowed) return { error: 'Access denied', success: false };
     this.dataAccess.validateFoundryState();
     return this.dataAccess.manageEffects(data);
+  }
+
+  /**
+   * Escape hatch: run caller-supplied JavaScript against the live client. Gated by
+   * the `enableEvaluate` world setting (handled in dataAccess.evaluateCode, which
+   * throws a descriptive error naming the setting when it's off). GM access is
+   * still checked silently here first, matching every other write query.
+   */
+  private async handleEvaluate(data: { code: string; timeoutMs?: number }): Promise<any> {
+    const gmCheck = this.validateGMAccess();
+    if (!gmCheck.allowed) return { error: 'Access denied', success: false };
+    this.dataAccess.validateFoundryState();
+
+    if (!data?.code || typeof data.code !== 'string') {
+      throw new Error('code is required and must be a non-empty string');
+    }
+
+    return this.dataAccess.evaluateCode(data);
   }
 }

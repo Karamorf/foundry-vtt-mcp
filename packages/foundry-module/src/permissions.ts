@@ -63,6 +63,14 @@ export class PermissionManager {
       settingKey: 'allowWriteOperations',
       requiresGM: true,
     },
+    evaluate: {
+      name: 'Evaluate JavaScript',
+      level: PERMISSION_LEVELS.HIGH_RISK,
+      description:
+        'Run arbitrary async JavaScript against the live game client with full Gamemaster power (escape hatch)',
+      settingKey: 'enableEvaluate',
+      requiresGM: true,
+    },
   };
 
   /**

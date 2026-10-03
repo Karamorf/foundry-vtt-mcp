@@ -270,6 +270,19 @@ export class ModuleSettings {
     // Removed 'enableWriteAuditLog' setting as it provides no rollback functionality
     // and only creates log entries without user-actionable features
 
+    // ============================================================================
+    // SECTION 3B: DANGER ZONE - Arbitrary Code Execution
+    // ============================================================================
+
+    game.settings.register(this.moduleId, 'enableEvaluate', {
+      name: 'Enable JavaScript Evaluation (DANGEROUS)',
+      hint: 'Allows the AI model to run arbitrary JavaScript inside this client via the "evaluate" tool, with full Gamemaster power over the world (create/modify/delete anything). Only a GM can change this world setting. Leave disabled unless you understand the risk.',
+      scope: 'world',
+      config: true,
+      type: Boolean,
+      default: false,
+    });
+
     // Enhanced Creature Index settings (configured via submenu only)
     game.settings.register(this.moduleId, 'enableEnhancedCreatureIndex', {
       scope: 'world',
