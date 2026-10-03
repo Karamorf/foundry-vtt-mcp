@@ -46,6 +46,7 @@ import { DSA5CharacterCreator } from './systems/dsa5/character-creator.js';
 import { DnD5eAddFeatureTool } from './tools/dnd5e/add-feature.js';
 import { DnD5eNpcTools } from './tools/dnd5e/npc.js';
 import { DnD5eFeaturesFromCompendiumTools } from './tools/dnd5e/features.js';
+import { DnD5eActorMechanicsTools } from './tools/dnd5e/actor-mechanics.js';
 
 const CONTROL_HOST = '127.0.0.1';
 
@@ -1207,6 +1208,7 @@ async function startBackend(): Promise<void> {
     foundryClient,
     logger,
   });
+  const dnd5eActorMechanicsTools = new DnD5eActorMechanicsTools({ foundryClient, logger });
 
   const questCreationTools = new QuestCreationTools({ foundryClient, logger });
 
@@ -1433,6 +1435,7 @@ async function startBackend(): Promise<void> {
     ...dnd5eAddFeatureTool.getToolDefinitions(),
     ...dnd5eNpcTools.getToolDefinitions(),
     ...dnd5eFeaturesFromCompendiumTools.getToolDefinitions(),
+    ...dnd5eActorMechanicsTools.getToolDefinitions(),
 
     ...questCreationTools.getToolDefinitions(),
 
@@ -1643,6 +1646,16 @@ async function startBackend(): Promise<void> {
                 case 'dnd5e-add-features-from-compendium':
                   result =
                     await dnd5eFeaturesFromCompendiumTools.handleAddFeaturesFromCompendium(args);
+
+                  break;
+
+                case 'apply-damage':
+                  result = await dnd5eActorMechanicsTools.handleApplyDamage(args);
+
+                  break;
+
+                case 'roll-check':
+                  result = await dnd5eActorMechanicsTools.handleRollCheck(args);
 
                   break;
 
