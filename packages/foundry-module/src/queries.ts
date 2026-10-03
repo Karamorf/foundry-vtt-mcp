@@ -178,6 +178,8 @@ export class QueryHandlers {
 
     // Escape hatch: run arbitrary JavaScript against the live client
     CONFIG.queries[`${modulePrefix}.evaluate`] = this.handleEvaluate.bind(this);
+    CONFIG.queries[`${modulePrefix}.applyDamage`] = this.handleApplyDamage.bind(this);
+    CONFIG.queries[`${modulePrefix}.rollCheck`] = this.handleRollCheck.bind(this);
   }
 
   /**
@@ -2169,6 +2171,83 @@ export class QueryHandlers {
     } catch (error) {
       throw new Error(
         `Failed to get system schema: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Handle apply damage/healing request (D&D 5e only)
+   */
+  private async handleApplyDamage(data: {
+    actorId?: string;
+    tokenId?: string;
+    amount: number;
+    type?: string;
+    healing?: boolean;
+    temp?: boolean;
+  }): Promise<any> {
+    try {
+      // SECURITY: Silent GM validation
+      const gmCheck = this.validateGMAccess();
+      if (!gmCheck.allowed) {
+        return { error: 'Access denied', success: false };
+      }
+
+      this.dataAccess.validateFoundryState();
+
+      if (!data.actorId && !data.tokenId) {
+        throw new Error('Either actorId or tokenId is required');
+      }
+      if (typeof data.amount !== 'number') {
+        throw new Error('amount is required and must be a number');
+      }
+
+      return await this.dataAccess.applyDamage(data);
+    } catch (error) {
+      throw new Error(
+        `Failed to apply damage: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Handle GM roll check request — rolls a skill/ability/save/tool check for an actor and
+   * posts it to chat. Unlike request-player-rolls, this is the GM rolling, not a player
+   * request. (D&D 5e only)
+   */
+  private async handleRollCheck(data: {
+    actorId?: string;
+    tokenId?: string;
+    kind: 'skill' | 'ability' | 'save' | 'tool';
+    key: string;
+    dc?: number;
+    advantage?: boolean;
+    disadvantage?: boolean;
+    bonus?: string;
+  }): Promise<any> {
+    try {
+      // SECURITY: Silent GM validation
+      const gmCheck = this.validateGMAccess();
+      if (!gmCheck.allowed) {
+        return { error: 'Access denied', success: false };
+      }
+
+      this.dataAccess.validateFoundryState();
+
+      if (!data.actorId && !data.tokenId) {
+        throw new Error('Either actorId or tokenId is required');
+      }
+      if (!data.kind || !['skill', 'ability', 'save', 'tool'].includes(data.kind)) {
+        throw new Error('kind is required and must be one of: skill, ability, save, tool');
+      }
+      if (!data.key) {
+        throw new Error('key is required');
+      }
+
+      return await this.dataAccess.rollCheck(data);
+    } catch (error) {
+      throw new Error(
+        `Failed to roll check: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }

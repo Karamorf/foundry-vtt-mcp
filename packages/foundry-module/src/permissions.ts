@@ -114,6 +114,22 @@ export class PermissionManager {
       settingKey: 'enableEvaluate',
       requiresGM: true,
     },
+    applyDamage: {
+      name: 'Apply Damage/Healing',
+      level: PERMISSION_LEVELS.MEDIUM_RISK,
+      description:
+        "Apply damage or healing to an actor's hit points, honoring resistances/immunities/vulnerabilities",
+      settingKey: 'allowWriteOperations',
+      requiresGM: true,
+    },
+    rollCheck: {
+      name: 'GM Roll Check',
+      level: PERMISSION_LEVELS.LOW_RISK,
+      description:
+        'Roll a skill, ability, saving throw, or tool check on behalf of an actor (GM rolling, not a player request) and post the result to chat',
+      settingKey: 'allowWriteOperations',
+      requiresGM: true,
+    },
   };
 
   /**

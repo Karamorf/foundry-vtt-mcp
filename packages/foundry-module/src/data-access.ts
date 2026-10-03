@@ -11296,6 +11296,254 @@ export class FoundryDataAccess {
     }
   }
 
+  /**
+   * Resolve the actor an actor-mechanics tool (applyDamage, rollCheck) should operate on.
+   * Prefers the token's synthetic actor when a tokenId is given, since an unlinked NPC
+   * token carries its own HP/data independent of the prototype actor.
+   */
+  private resolveActorForMechanics(data: { actorId?: string; tokenId?: string }): {
+    actor: any;
+    token?: any;
+  } {
+    if (data.tokenId) {
+      const scene = (game.scenes as any).current ?? (game.scenes as any).active;
+      if (!scene) {
+        throw new Error('No active scene found');
+      }
+      const token = scene.tokens?.get(data.tokenId);
+      if (!token) {
+        throw new Error(`Token ${data.tokenId} not found in current scene`);
+      }
+      if (!token.actor) {
+        throw new Error(`Token ${data.tokenId} has no associated actor`);
+      }
+      return { actor: token.actor, token };
+    }
+
+    if (data.actorId) {
+      const actor = game.actors?.get(data.actorId);
+      if (!actor) {
+        throw new Error(`Actor not found: ${data.actorId}`);
+      }
+      return { actor };
+    }
+
+    throw new Error('Either actorId or tokenId is required');
+  }
+
+  /**
+   * Apply damage or healing to an actor's hit points using dnd5e's own damage pipeline, so
+   * resistances, immunities and vulnerabilities (and damage thresholds/modifications) apply
+   * exactly as they would from a chat card. Prefers the token's synthetic actor over the
+   * world actor when tokenId is given (see resolveActorForMechanics).
+   */
+  async applyDamage(data: {
+    actorId?: string;
+    tokenId?: string;
+    amount: number;
+    type?: string;
+    healing?: boolean;
+    temp?: boolean;
+  }): Promise<any> {
+    this.validateFoundryState();
+
+    if ((game.system as any).id !== 'dnd5e') {
+      throw new Error(`applyDamage requires D&D 5e. Current system: "${(game.system as any).id}".`);
+    }
+
+    if (data.healing && data.temp) {
+      throw new Error('healing and temp cannot both be true');
+    }
+    if (!Number.isFinite(data.amount) || data.amount < 0) {
+      throw new Error('amount must be a non-negative number');
+    }
+
+    const permissionCheck = permissionManager.checkWritePermission('applyDamage', {
+      targetIds: [data.tokenId ?? data.actorId].filter(Boolean) as string[],
+    });
+    if (!permissionCheck.allowed) {
+      throw new Error(`${ERROR_MESSAGES.ACCESS_DENIED}: ${permissionCheck.reason}`);
+    }
+
+    try {
+      const { actor, token } = this.resolveActorForMechanics(data);
+
+      const hpBeforeSource = actor.system?.attributes?.hp;
+      if (!hpBeforeSource) {
+        throw new Error(`Actor "${actor.name}" has no hit points (e.g. a group actor)`);
+      }
+      const hpBefore = {
+        value: hpBeforeSource.value,
+        temp: hpBeforeSource.temp ?? 0,
+        max: hpBeforeSource.max,
+      };
+
+      // dnd5e's Actor5e#applyDamage takes DamageDescription[]: {value, type}. Resistances,
+      // immunities and vulnerabilities are resolved internally from actor.system.traits by
+      // matching `type`, so the type string must be a real dnd5e damage type to take effect.
+      // "healing" and "temphp" are special-cased types dnd5e itself recognizes.
+      const damageType = data.temp ? 'temphp' : data.healing ? 'healing' : data.type;
+      const damages = [{ value: data.amount, type: damageType }];
+
+      await actor.applyDamage(damages, {});
+
+      const hpAfterSource = actor.system.attributes.hp;
+      const hpAfter = {
+        value: hpAfterSource.value,
+        temp: hpAfterSource.temp ?? 0,
+        max: hpAfterSource.max,
+      };
+
+      // Positive = net HP lost (damage), negative = net HP gained (healing/temp HP granted).
+      // Derived from the actual before/after pool so it reflects resistance/immunity/
+      // vulnerability and clamping at 0/max, not just the raw requested amount.
+      const amountApplied = hpBefore.value + hpBefore.temp - (hpAfter.value + hpAfter.temp);
+
+      const result = {
+        success: true,
+        actorId: actor.id,
+        actorName: actor.name,
+        tokenId: token?.id ?? null,
+        requested: {
+          amount: data.amount,
+          type: damageType ?? null,
+          healing: !!data.healing,
+          temp: !!data.temp,
+        },
+        hpBefore,
+        hpAfter,
+        amountApplied,
+      };
+
+      this.auditLog('applyDamage', data, 'success');
+
+      return result;
+    } catch (error) {
+      this.auditLog(
+        'applyDamage',
+        data,
+        'failure',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+      throw new Error(
+        `Failed to apply damage: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * GM-side roll with no dialog: roll a skill, ability check, saving throw, or tool check on
+   * behalf of an actor and post the result to chat. Unlike request-player-rolls (which asks a
+   * *player* to click a roll button), this rolls immediately as the GM.
+   */
+  async rollCheck(data: {
+    actorId?: string;
+    tokenId?: string;
+    kind: 'skill' | 'ability' | 'save' | 'tool';
+    key: string;
+    dc?: number;
+    advantage?: boolean;
+    disadvantage?: boolean;
+    bonus?: string;
+  }): Promise<any> {
+    this.validateFoundryState();
+
+    if ((game.system as any).id !== 'dnd5e') {
+      throw new Error(`rollCheck requires D&D 5e. Current system: "${(game.system as any).id}".`);
+    }
+
+    const permissionCheck = permissionManager.checkWritePermission('rollCheck', {
+      targetIds: [data.tokenId ?? data.actorId].filter(Boolean) as string[],
+    });
+    if (!permissionCheck.allowed) {
+      throw new Error(`${ERROR_MESSAGES.ACCESS_DENIED}: ${permissionCheck.reason}`);
+    }
+
+    try {
+      const { actor } = this.resolveActorForMechanics(data);
+
+      // Base roll config shared by all four kinds. `target` (the DC) and an extra `bonus`
+      // formula are both honored uniformly by dnd5e's D20Roll.fromConfig/mergeConfigs,
+      // regardless of which of the four rolling methods below is used.
+      const rollConfig: Record<string, any> = {};
+      if (data.advantage) rollConfig.advantage = true;
+      if (data.disadvantage) rollConfig.disadvantage = true;
+      if (typeof data.dc === 'number') rollConfig.target = data.dc;
+      if (data.bonus) rollConfig.rolls = [{ parts: [data.bonus] }];
+
+      // No dialog (headless-safe): {configure: false} skips ActivityChoiceDialog-style
+      // prompts and builds the roll directly from config.
+      const dialogConfig = { configure: false };
+
+      let rolls: any[] | null = null;
+      switch (data.kind) {
+        case 'skill':
+          rolls = await actor.rollSkill({ ...rollConfig, skill: data.key }, dialogConfig, {});
+          break;
+        case 'tool':
+          rolls = await actor.rollToolCheck({ ...rollConfig, tool: data.key }, dialogConfig, {});
+          break;
+        case 'ability':
+          rolls = await actor.rollAbilityCheck(
+            { ...rollConfig, ability: data.key },
+            dialogConfig,
+            {}
+          );
+          break;
+        case 'save':
+          rolls = await actor.rollSavingThrow(
+            { ...rollConfig, ability: data.key },
+            dialogConfig,
+            {}
+          );
+          break;
+        default:
+          throw new Error(`Unknown roll kind: ${data.kind}`);
+      }
+
+      if (!rolls || rolls.length === 0) {
+        throw new Error(
+          `Roll did not produce a result (check that "${data.key}" is a valid ${data.kind} key for this actor)`
+        );
+      }
+
+      const roll = rolls[0];
+      const message = (roll as any).parent ?? null;
+      const natural = (roll as any).d20?.total ?? null;
+
+      const result: any = {
+        success: true,
+        actorId: actor.id,
+        actorName: actor.name,
+        kind: data.kind,
+        key: data.key,
+        total: roll.total,
+        natural,
+        formula: roll.formula,
+        messageId: message?.id ?? null,
+      };
+
+      if (typeof data.dc === 'number') {
+        result.dc = data.dc;
+        result.succeeded = roll.total >= data.dc;
+      }
+
+      this.auditLog('rollCheck', data, 'success');
+
+      return result;
+    } catch (error) {
+      this.auditLog(
+        'rollCheck',
+        data,
+        'failure',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+      throw new Error(
+        `Failed to roll check: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
   // ─── Generic actor CRUD ─────────────────────────────────────────────────────
 
   /**
