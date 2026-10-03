@@ -10,6 +10,8 @@ const { chromium } = require('playwright');
 const FOUNDRY_URL = (process.env.FOUNDRY_URL || '').replace(/\/$/, '');
 const FOUNDRY_USERNAME = process.env.FOUNDRY_MCP_USERNAME || 'Gamemaster';
 const FOUNDRY_PASSWORD = process.env.FOUNDRY_MCP_PASSWORD;
+// Opt-in: turn on the bridge's GM-only `evaluate` tool (full GM power) for this world.
+const ENABLE_EVALUATE = process.env.FOUNDRY_MCP_ENABLE_EVALUATE === 'true';
 const MODULE_ID = 'foundry-mcp-bridge';
 const HEALTH_INTERVAL_MS = 30000;
 
@@ -37,7 +39,8 @@ async function join(browser) {
     localStorage.setItem('core.noCanvas', 'true');
     document.addEventListener('DOMContentLoaded', () => {
       const style = document.createElement('style');
-      style.textContent = '*,*::before,*::after{animation:none!important;transition:none!important}';
+      style.textContent =
+        '*,*::before,*::after{animation:none!important;transition:none!important}';
       document.head.append(style);
     });
   });
@@ -55,26 +58,35 @@ async function join(browser) {
 
   // The browser and the backend share this container, so the module must use a plain
   // WebSocket to localhost. These are world settings; only change them when they differ.
-  const state = await page.evaluate(async moduleId => {
-    const module = game.modules.get(moduleId);
-    if (!module?.active) return { active: false };
-    const wanted = { enabled: true, connectionType: 'websocket', serverHost: 'localhost' };
-    const changed = [];
-    for (const [key, value] of Object.entries(wanted)) {
-      if (game.settings.get(moduleId, key) !== value) {
-        await game.settings.set(moduleId, key, value);
-        changed.push(key);
+  const state = await page.evaluate(
+    async ({ moduleId, enableEvaluate }) => {
+      const module = game.modules.get(moduleId);
+      if (!module?.active) return { active: false };
+      const wanted = { enabled: true, connectionType: 'websocket', serverHost: 'localhost' };
+      // Older bridge builds don't register this setting; only manage it when it exists.
+      if (game.settings.settings.has(`${moduleId}.enableEvaluate`)) {
+        wanted.enableEvaluate = enableEvaluate;
       }
-    }
-    return { active: true, version: module.version, changed };
-  }, MODULE_ID);
+      const changed = [];
+      for (const [key, value] of Object.entries(wanted)) {
+        if (game.settings.get(moduleId, key) !== value) {
+          await game.settings.set(moduleId, key, value);
+          changed.push(key);
+        }
+      }
+      return { active: true, version: module.version, changed };
+    },
+    { moduleId: MODULE_ID, enableEvaluate: ENABLE_EVALUATE }
+  );
 
   // Nobody can click a dialog here, so anything that renders one hangs. Log every
   // window that opens so those calls are easy to spot.
   await page.evaluate(() => {
     for (const hook of ['renderApplicationV2', 'renderApplication']) {
       Hooks.on(hook, app =>
-        console.warn(`[window] ${app.constructor.name}: ${app.title ?? app.options?.window?.title ?? ''}`)
+        console.warn(
+          `[window] ${app.constructor.name}: ${app.title ?? app.options?.window?.title ?? ''}`
+        )
       );
     }
   });
