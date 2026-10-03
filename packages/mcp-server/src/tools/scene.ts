@@ -43,7 +43,8 @@ export class SceneTools {
       },
       {
         name: 'get-world-info',
-        description: 'Get basic information about the Foundry world and system',
+        description:
+          'Get basic information about the Foundry world and system, including whether the game is currently paused',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -251,6 +252,7 @@ export class SceneTools {
       foundry: {
         version: worldData.foundryVersion,
       },
+      paused: !!worldData.paused,
       users: {
         total: worldData.users?.length || 0,
         active: worldData.users?.filter((u: any) => u.active).length || 0,

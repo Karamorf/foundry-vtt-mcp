@@ -84,6 +84,21 @@ export class PermissionManager {
       settingKey: 'allowWriteOperations',
       requiresGM: true,
     },
+    setPaused: {
+      name: 'Set Paused',
+      level: PERMISSION_LEVELS.MEDIUM_RISK,
+      description: 'Pause or unpause the game for all connected players',
+      settingKey: 'allowWriteOperations',
+      requiresGM: true,
+    },
+    createChatMessage: {
+      name: 'Create Chat Message',
+      level: PERMISSION_LEVELS.LOW_RISK,
+      description:
+        'Post a narration or in-character chat message, optionally whispered to specific players',
+      settingKey: 'allowWriteOperations',
+      requiresGM: true,
+    },
   };
 
   /**

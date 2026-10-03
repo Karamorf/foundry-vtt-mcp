@@ -197,6 +197,7 @@ export interface WorldInfo {
   system: string;
   systemVersion: string;
   foundryVersion: string;
+  paused: boolean;
   users: WorldUser[];
 }
 

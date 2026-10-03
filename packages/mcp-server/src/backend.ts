@@ -41,6 +41,8 @@ import { MapGenerationTools } from './tools/map-generation.js';
 
 import { TokenManipulationTools } from './tools/token-manipulation.js';
 
+import { TableControlTools } from './tools/table-control.js';
+
 import { DSA5CharacterCreator } from './systems/dsa5/character-creator.js';
 
 import { DnD5eAddFeatureTool } from './tools/dnd5e/add-feature.js';
@@ -1220,6 +1222,8 @@ async function startBackend(): Promise<void> {
 
   const tokenManipulationTools = new TokenManipulationTools({ foundryClient, logger });
 
+  const tableControlTools = new TableControlTools({ foundryClient, logger });
+
   const wfrp4eUpdateActorTools = new WFRP4eUpdateActorTools({ foundryClient, logger });
   const wfrp4eAddItemsTools = new WFRP4eAddItemsTools({ foundryClient, logger });
 
@@ -1457,6 +1461,8 @@ async function startBackend(): Promise<void> {
     ...playlistTools.getToolDefinitions(),
 
     ...combatTools.getToolDefinitions(),
+
+    ...tableControlTools.getToolDefinitions(),
   ];
 
   // Start Foundry connector (owns app port 31415)
@@ -1810,6 +1816,18 @@ async function startBackend(): Promise<void> {
 
                 case 'get-combat-state':
                   result = await combatTools.handleGetCombatState(args);
+
+                  break;
+
+                // Table control tools
+
+                case 'set-paused':
+                  result = await tableControlTools.handleSetPaused(args);
+
+                  break;
+
+                case 'narrate':
+                  result = await tableControlTools.handleNarrate(args);
 
                   break;
 
