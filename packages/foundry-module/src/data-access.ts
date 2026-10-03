@@ -12227,6 +12227,161 @@ export class FoundryDataAccess {
       );
     }
   }
+
+  // ─── evaluate (escape hatch) ──────────────────────────────────────────────
+
+  /**
+   * Maximum size (in characters of the JSON-serialized form) of the `evaluate` result
+   * before it is truncated. Keeps a runaway script from blowing up the WebSocket payload.
+   */
+  private static readonly EVALUATE_MAX_RESULT_CHARS = 200_000;
+
+  /**
+   * Default/maximum timeout for `evaluate`. Kept under the foundry-connector.ts query
+   * transport's hardcoded 10s timeout so a slow script returns our own descriptive
+   * timeout error instead of the transport's generic "Query timeout" rejection.
+   */
+  private static readonly EVALUATE_MAX_TIMEOUT_MS = 9000;
+
+  /**
+   * Escape hatch: run caller-supplied JavaScript as the body of an async function
+   * inside this loaded client, with `game` and the usual browser globals in scope
+   * (the function body executes in global scope, same as the rest of this module).
+   * Full GM power - gated by the `enableEvaluate` world setting (default off).
+   */
+  async evaluateCode(data: {
+    code: string;
+    timeoutMs?: number;
+  }): Promise<
+    | { success: true; result: unknown; truncated: boolean }
+    | { success: false; error: { message: string; stack?: string } }
+  > {
+    this.validateFoundryState();
+
+    const permissionCheck = permissionManager.checkWritePermission('evaluate');
+    if (!permissionCheck.allowed) {
+      throw new Error(
+        `${ERROR_MESSAGES.ACCESS_DENIED}: ${permissionCheck.reason}. A GM must enable it first: ` +
+          `World Settings → Configure Settings → Foundry MCP Bridge → "Enable JavaScript Evaluation (DANGEROUS)" ` +
+          `(or as a GM, run game.settings.set('${this.moduleId}', 'enableEvaluate', true)).`
+      );
+    }
+
+    if (!data.code || typeof data.code !== 'string') {
+      throw new Error('code is required and must be a non-empty string');
+    }
+
+    const requestedTimeout =
+      typeof data.timeoutMs === 'number' && Number.isFinite(data.timeoutMs) && data.timeoutMs > 0
+        ? data.timeoutMs
+        : FoundryDataAccess.EVALUATE_MAX_TIMEOUT_MS;
+    const timeoutMs = Math.min(requestedTimeout, FoundryDataAccess.EVALUATE_MAX_TIMEOUT_MS);
+
+    try {
+      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
+        code: string
+      ) => () => Promise<unknown>;
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval -- this *is* the escape hatch
+      const fn = new AsyncFunction(data.code);
+
+      const runResult = await this.withEvaluateTimeout(fn(), timeoutMs);
+
+      this.auditLog('evaluate', { code: data.code }, 'success');
+
+      const { result, truncated } = this.serializeEvaluateResult(runResult);
+      return { success: true, result, truncated };
+    } catch (error) {
+      this.auditLog(
+        'evaluate',
+        { code: data.code },
+        'failure',
+        error instanceof Error ? error.message : String(error)
+      );
+
+      return {
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+          ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+        },
+      };
+    }
+  }
+
+  /**
+   * Race a promise against a timeout, so a hung `evaluate` script can't hang the
+   * bridge forever.
+   */
+  private withEvaluateTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`evaluate timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      promise.then(
+        value => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        error => {
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
+  }
+
+  /**
+   * Safely serialize an `evaluate` result to a JSON-safe value: functions/bigints are
+   * stringified, Errors become plain objects, circular references are replaced with a
+   * marker instead of throwing, undefined becomes null, and oversized results are
+   * truncated.
+   */
+  private serializeEvaluateResult(value: unknown): { result: unknown; truncated: boolean } {
+    const seen = new WeakSet<object>();
+    const replacer = (_key: string, val: unknown): unknown => {
+      if (typeof val === 'function') {
+        return `[Function: ${(val as { name?: string }).name || 'anonymous'}]`;
+      }
+      if (typeof val === 'bigint') {
+        return `${val.toString()}n`;
+      }
+      if (val instanceof Error) {
+        return { name: val.name, message: val.message, stack: val.stack };
+      }
+      if (typeof val === 'object' && val !== null) {
+        if (seen.has(val as object)) {
+          return '[Circular Reference]';
+        }
+        seen.add(val as object);
+      }
+      return val;
+    };
+
+    let json: string;
+    try {
+      // JSON.stringify(undefined, ...) returns the JS value `undefined` (not a string)
+      // for a top-level undefined result, so normalize that to the string 'null'.
+      json = JSON.stringify(value, replacer) ?? 'null';
+    } catch (error) {
+      json = JSON.stringify({
+        __serializationError__: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (json.length <= FoundryDataAccess.EVALUATE_MAX_RESULT_CHARS) {
+      try {
+        return { result: JSON.parse(json), truncated: false };
+      } catch {
+        return { result: json, truncated: false };
+      }
+    }
+
+    return {
+      result: `${json.slice(0, FoundryDataAccess.EVALUATE_MAX_RESULT_CHARS)}... [truncated]`,
+      truncated: true,
+    };
+  }
 }
 
 // =============================================================================
