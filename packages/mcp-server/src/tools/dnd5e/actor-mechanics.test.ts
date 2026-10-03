@@ -87,11 +87,26 @@ describe('DnD5eActorMechanicsTools', () => {
         return { success: true };
       });
 
-      // The error-handler formats all thrown errors into a generic user-facing message
-      // (see ErrorHandler.mapFoundryError), so assert on behavior rather than the exact
-      // "requires D&D 5e" text: the operation must fail and never reach the bridge.
-      await expect(tools.handleApplyDamage({ actorId: 'a1', amount: 5 })).rejects.toThrow();
+      await expect(tools.handleApplyDamage({ actorId: 'a1', amount: 5 })).rejects.toThrow(/D&D 5e/);
       expect(query).not.toHaveBeenCalledWith('foundry-mcp-bridge.applyDamage', expect.anything());
+    });
+
+    it('surfaces the bridge module’s real error message instead of a generic one', async () => {
+      const { tools } = makeTools(async (method: string) => {
+        if (method === 'foundry-mcp-bridge.getWorldInfo') {
+          return { system: { id: 'dnd5e' } };
+        }
+        // Mirrors what FoundryClient#query throws when the module-side query handler rejects
+        // (see foundry-client.ts: `Query ${method} failed: ${errorMessage}`).
+        throw new Error(
+          'Query foundry-mcp-bridge.applyDamage failed: Failed to apply damage: ' +
+            'Token missing-token not found in current scene'
+        );
+      });
+
+      await expect(
+        tools.handleApplyDamage({ tokenId: 'missing-token', amount: 5 })
+      ).rejects.toThrow(/Token missing-token not found in current scene/);
     });
   });
 
@@ -142,8 +157,24 @@ describe('DnD5eActorMechanicsTools', () => {
 
       await expect(
         tools.handleRollCheck({ actorId: 'a1', kind: 'save', key: 'wis' })
-      ).rejects.toThrow();
+      ).rejects.toThrow(/D&D 5e/);
       expect(query).not.toHaveBeenCalledWith('foundry-mcp-bridge.rollCheck', expect.anything());
+    });
+
+    it('surfaces the bridge module’s real error message instead of a generic one', async () => {
+      const { tools } = makeTools(async (method: string) => {
+        if (method === 'foundry-mcp-bridge.getWorldInfo') {
+          return { system: { id: 'dnd5e' } };
+        }
+        throw new Error(
+          'Query foundry-mcp-bridge.rollCheck failed: Failed to roll check: ' +
+            'Token missing-token has no associated actor'
+        );
+      });
+
+      await expect(
+        tools.handleRollCheck({ tokenId: 'missing-token', kind: 'skill', key: 'prc' })
+      ).rejects.toThrow(/Token missing-token has no associated actor/);
     });
   });
 });
