@@ -1831,6 +1831,16 @@ async function startBackend(): Promise<void> {
 
                   break;
 
+                case 'create-scene':
+                  result = await sceneTools.handleCreateScene(args);
+
+                  break;
+
+                case 'list-map-images':
+                  result = await sceneTools.handleListMapImages(args);
+
+                  break;
+
                 default:
                   throw new Error(`Unknown tool: ${name}`);
               }

@@ -73,6 +73,88 @@ export class SceneTools {
           required: ['scene_identifier'],
         },
       },
+      {
+        name: 'create-scene',
+        description:
+          'Create a new scene from an existing background image already under the Foundry Data ' +
+          'directory (e.g. one found with list-map-images, or produced by generate-map). ' +
+          "Requires GM access. Width/height default to the image's natural pixel size when it " +
+          'can be determined headlessly; if it cannot, pass both explicitly. The scene is NOT ' +
+          'activated by default (activation pulls connected players to it) and no thumbnail is ' +
+          'generated (thumbnail generation needs the canvas, which is disabled headlessly).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Name for the new scene',
+            },
+            backgroundPath: {
+              type: 'string',
+              description:
+                'Path to the background image under the Foundry Data directory, e.g. ' +
+                "'worlds/lostmines/maps/x.webp'",
+            },
+            width: {
+              type: 'number',
+              description:
+                "Scene width in pixels. Defaults to the background image's natural width if it " +
+                'can be determined headlessly; required otherwise.',
+            },
+            height: {
+              type: 'number',
+              description:
+                "Scene height in pixels. Defaults to the background image's natural height if it " +
+                'can be determined headlessly; required otherwise.',
+            },
+            gridSize: {
+              type: 'number',
+              description: 'Grid square size in pixels (default: 100)',
+            },
+            gridDistance: {
+              type: 'number',
+              description: 'Grid distance per square, in gridUnits (default: 5)',
+            },
+            gridUnits: {
+              type: 'string',
+              description: 'Grid distance units (default: "ft")',
+            },
+            padding: {
+              type: 'number',
+              description: 'Scene padding as a fraction of scene size (default: 0.25)',
+            },
+            activate: {
+              type: 'boolean',
+              description:
+                'Whether to activate the scene immediately. Activation pulls connected players ' +
+                'to it, so this defaults to false.',
+              default: false,
+            },
+            navigation: {
+              type: 'boolean',
+              description: 'Whether the scene appears in scene navigation (default: true)',
+            },
+          },
+          required: ['name', 'backgroundPath'],
+        },
+      },
+      {
+        name: 'list-map-images',
+        description:
+          'Browse image files under the Foundry Data directory, to find backgrounds for ' +
+          "create-scene. Defaults to the current world's folder. Requires GM access.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description:
+                "Data-relative directory to browse, e.g. 'worlds/lostmines/maps'. " +
+                "Defaults to 'worlds/<current world id>'.",
+            },
+          },
+        },
+      },
     ];
   }
 
@@ -144,6 +226,54 @@ export class SceneTools {
       this.logger.error('Failed to update scene music', error);
       throw new Error(
         `Failed to update scene music: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async handleCreateScene(args: any): Promise<any> {
+    const schema = z.object({
+      name: z.string().min(1),
+      backgroundPath: z.string().min(1),
+      width: z.number().positive().optional(),
+      height: z.number().positive().optional(),
+      gridSize: z.number().positive().optional(),
+      gridDistance: z.number().positive().optional(),
+      gridUnits: z.string().optional(),
+      padding: z.number().min(0).optional(),
+      activate: z.boolean().default(false),
+      navigation: z.boolean().optional(),
+    });
+    const parsed = schema.parse(args);
+
+    this.logger.info('Creating scene', {
+      name: parsed.name,
+      backgroundPath: parsed.backgroundPath,
+    });
+    try {
+      const result = await this.foundryClient.query('foundry-mcp-bridge.create-scene', parsed);
+      this.logger.info('Scene created', { name: parsed.name, sceneId: result?.sceneId });
+      return result;
+    } catch (error) {
+      this.logger.error('Failed to create scene', error);
+      throw new Error(
+        `Failed to create scene: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  async handleListMapImages(args: any): Promise<any> {
+    const schema = z.object({
+      path: z.string().optional(),
+    });
+    const parsed = schema.parse(args ?? {});
+
+    this.logger.info('Listing map images', { path: parsed.path });
+    try {
+      return await this.foundryClient.query('foundry-mcp-bridge.list-map-images', parsed);
+    } catch (error) {
+      this.logger.error('Failed to list map images', error);
+      throw new Error(
+        `Failed to list map images: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }

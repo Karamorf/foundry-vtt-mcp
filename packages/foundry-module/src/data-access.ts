@@ -1,6 +1,7 @@
 import { MODULE_ID, ERROR_MESSAGES, TOKEN_DISPOSITIONS } from './constants.js';
 import { permissionManager } from './permissions.js';
 import { transactionManager } from './transaction-manager.js';
+import { createSceneWithBackground } from './scene-creation.js';
 // Local type definitions to avoid shared package import issues
 interface CharacterInfo {
   id: string;
@@ -7514,6 +7515,161 @@ export class FoundryDataAccess {
         `Failed to switch scene: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
+  }
+
+  // ===== SCENE CREATION =====
+
+  /**
+   * Resolve an image's natural pixel dimensions headlessly, without canvas.
+   * `core.noCanvas` disables the PixiJS canvas (and with it, thumbnail
+   * generation), but a plain <img> element still decodes images fine in a
+   * headless browser, so this works even with `core.noCanvas` set.
+   */
+  private async getImageNaturalSize(
+    backgroundPath: string
+  ): Promise<{ width: number; height: number } | null> {
+    if (typeof Image === 'undefined') {
+      return null;
+    }
+
+    try {
+      const src = (foundry as any)?.utils?.getRoute
+        ? (foundry as any).utils.getRoute(backgroundPath)
+        : backgroundPath;
+
+      return await new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+        img.onerror = () => resolve(null);
+        img.src = src;
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Create a new Scene from an existing background image already present under
+   * the Foundry Data directory (e.g. found via `listMapImages`, uploaded by hand,
+   * or produced by `generate-map`). Intentionally never calls `Scene#createThumbnail`:
+   * `Scene.create()` itself never does (thumbnailing only happens from the Scene
+   * Configuration sheet's submit handler), and that handler's thumbnail generation
+   * fails under `core.noCanvas` anyway.
+   */
+  async createScene(request: {
+    name: string;
+    backgroundPath: string;
+    width?: number;
+    height?: number;
+    gridSize?: number;
+    gridDistance?: number;
+    gridUnits?: string;
+    padding?: number;
+    activate?: boolean;
+    navigation?: boolean;
+  }): Promise<any> {
+    this.validateFoundryState();
+
+    const permissionCheck = permissionManager.checkWritePermission('createScene');
+    if (!permissionCheck.allowed) {
+      throw new Error(`${ERROR_MESSAGES.ACCESS_DENIED}: ${permissionCheck.reason}`);
+    }
+
+    if (!request.name || !request.name.trim()) {
+      throw new Error('name is required');
+    }
+    if (!request.backgroundPath || !request.backgroundPath.trim()) {
+      throw new Error('backgroundPath is required');
+    }
+
+    let { width, height } = request;
+    if (!width || !height) {
+      const naturalSize = await this.getImageNaturalSize(request.backgroundPath);
+      if (naturalSize) {
+        width = width || naturalSize.width;
+        height = height || naturalSize.height;
+      }
+    }
+
+    if (!width || !height) {
+      throw new Error(
+        'Could not determine the image dimensions headlessly; pass width and height explicitly.'
+      );
+    }
+
+    const sceneData: Record<string, any> = {
+      name: request.name.trim(),
+      // Foundry v13+ Scene documents have no top-level `img` field - the background
+      // image is set exclusively via `background.src` (relocated to a Level document
+      // on v14 by createSceneWithBackground()).
+      background: { src: request.backgroundPath },
+      width,
+      height,
+      padding: request.padding ?? 0.25,
+      backgroundColor: '#999999',
+      grid: {
+        type: 1, // CONST.GRID_TYPES.SQUARE
+        size: request.gridSize ?? 100,
+        color: '#000000',
+        alpha: 0.2,
+        distance: request.gridDistance ?? 5,
+        units: request.gridUnits ?? 'ft',
+      },
+      navigation: request.navigation ?? true,
+      active: false,
+    };
+
+    try {
+      const scene = await createSceneWithBackground(sceneData);
+
+      if (request.activate) {
+        await scene.activate();
+      }
+
+      this.auditLog('createScene', request, 'success');
+
+      return {
+        success: true,
+        sceneId: scene.id,
+        sceneName: scene.name,
+        dimensions: { width, height },
+        background: request.backgroundPath,
+        active: !!request.activate,
+      };
+    } catch (error) {
+      this.auditLog(
+        'createScene',
+        request,
+        'failure',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * List image files under a Data-relative path, defaulting to the current
+   * world's folder. Used to find existing map images to pass to `createScene`.
+   * Verified v14 API: `foundry.applications.apps.FilePicker.implementation.browse`.
+   */
+  async listMapImages(
+    options: { path?: string } = {}
+  ): Promise<{ path: string; dirs: string[]; files: string[] }> {
+    this.validateFoundryState();
+
+    const path = options.path || `worlds/${game.world.id}`;
+    const IMAGE_EXTENSIONS = /\.(webp|png|jpe?g|gif|svg|avif|bmp|tiff?)$/i;
+
+    const browseResult = await (foundry as any).applications.apps.FilePicker.implementation.browse(
+      'data',
+      path
+    );
+
+    return {
+      path,
+      dirs: browseResult.dirs || [],
+      files: (browseResult.files || []).filter((file: string) => IMAGE_EXTENSIONS.test(file)),
+    };
   }
 
   // ===== SCENE MUSIC BINDINGS =====
