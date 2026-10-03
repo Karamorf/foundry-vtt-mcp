@@ -8108,18 +8108,42 @@ export class FoundryDataAccess {
 
       // Resolve which requested ids actually exist on the scene before deleting,
       // since deleteEmbeddedDocuments silently ignores unknown ids.
-      const existingTokenIds = data.tokenIds.filter(tokenId => !!scene.tokens.get(tokenId));
-      const failedTokens = data.tokenIds.filter(tokenId => !scene.tokens.get(tokenId));
+      const existingTokenIds = new Set(
+        data.tokenIds.filter(tokenId => !!scene.tokens.get(tokenId))
+      );
 
       // Delete via the embedded document API (not token.delete()) so this works
       // headless: per-token delete() can throw from a canvas-dependent hook even
       // though the document is removed, which previously made every delete look
-      // like a failure.
-      const deletedDocs =
-        existingTokenIds.length > 0
-          ? await scene.deleteEmbeddedDocuments('Token', existingTokenIds)
-          : [];
-      const deletedTokens: string[] = deletedDocs.map((doc: any) => doc.id);
+      // like a failure. deleteEmbeddedDocuments itself isn't fully safe headless
+      // either: Foundry v14 core still runs post-delete canvas bookkeeping after
+      // the server has already applied the delete
+      // (CanvasDocument._onDeleteOperation -> `layer.clipboard.objects = ...`,
+      // foundry.mjs ~39311). With no canvas, `layer` is null there, so the call
+      // can reject locally even though the documents are already gone
+      // server-side. So don't trust the throw by itself -- verify against
+      // scene.tokens afterwards.
+      let deleteError: unknown = null;
+      if (existingTokenIds.size > 0) {
+        try {
+          await scene.deleteEmbeddedDocuments('Token', Array.from(existingTokenIds));
+        } catch (error) {
+          deleteError = error;
+        }
+      }
+
+      const deletedTokens = data.tokenIds.filter(
+        tokenId => existingTokenIds.has(tokenId) && !scene.tokens.get(tokenId)
+      );
+      const failedTokens = data.tokenIds.filter(
+        tokenId => !existingTokenIds.has(tokenId) || !!scene.tokens.get(tokenId)
+      );
+
+      // Only propagate the delete error if it actually prevented every removal;
+      // otherwise it's the headless clipboard artifact described above.
+      if (deleteError && deletedTokens.length === 0) {
+        throw deleteError;
+      }
 
       this.auditLog(
         'deleteTokens',

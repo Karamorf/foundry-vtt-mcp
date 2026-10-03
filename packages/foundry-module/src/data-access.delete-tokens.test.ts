@@ -24,7 +24,16 @@ function setupFoundry(options: {
   const deleteEmbeddedDocuments =
     options.deleteEmbeddedDocuments ??
     vi.fn().mockImplementation(async (_type: string, ids: string[]) => {
-      return ids.map(id => tokenDocs.find(t => t.id === id)).filter(Boolean);
+      // Mirror real deleteEmbeddedDocuments: it actually removes the documents
+      // from the scene's collection before resolving.
+      const deleted = ids.map(id => tokenDocs.find(t => t.id === id)).filter(Boolean);
+      for (const id of ids) {
+        const index = tokenDocs.findIndex(t => t.id === id);
+        if (index !== -1) {
+          tokenDocs.splice(index, 1);
+        }
+      }
+      return deleted;
     });
 
   const scene = {
@@ -131,6 +140,48 @@ describe('FoundryDataAccess.deleteTokens', () => {
 
     expect(deleteEmbeddedDocuments).toHaveBeenCalledWith('Token', ['token-1']);
     expect(result.deletedCount).toBe(1);
+  });
+
+  it('reports the token as deleted when deleteEmbeddedDocuments removes it but then throws', async () => {
+    // Regression test for the headless "clipboard" artifact: Foundry v14 core's
+    // CanvasDocument._onDeleteOperation touches `layer.clipboard` after the
+    // server confirms the delete; with no canvas, `layer` is null and that
+    // throws locally even though the token is already gone. Simulate that by
+    // having the mock actually remove the token from the collection and then
+    // reject, the way the real call does headless.
+    const tokenDocs = [createTokenDoc('token-1', 'Goblin')];
+    const deleteEmbeddedDocuments = vi
+      .fn()
+      .mockImplementation(async (_type: string, ids: string[]) => {
+        for (const id of ids) {
+          const index = tokenDocs.findIndex(t => t.id === id);
+          if (index !== -1) {
+            tokenDocs.splice(index, 1);
+          }
+        }
+        throw new Error("Cannot read properties of null (reading 'clipboard')");
+      });
+    const { dataAccess } = setupFoundry({ tokens: tokenDocs, deleteEmbeddedDocuments });
+
+    const result = await dataAccess.deleteTokens({ tokenIds: ['token-1'] });
+
+    expect(deleteEmbeddedDocuments).toHaveBeenCalledWith('Token', ['token-1']);
+    expect(result.success).toBe(true);
+    expect(result.deletedCount).toBe(1);
+    expect(result.deletedTokens).toEqual(['token-1']);
+    expect(result.failedTokens).toBeUndefined();
+  });
+
+  it('rethrows the delete error when nothing was actually removed', async () => {
+    const tokenDocs = [createTokenDoc('token-1', 'Goblin')];
+    const deleteEmbeddedDocuments = vi
+      .fn()
+      .mockRejectedValue(new Error("Cannot read properties of null (reading 'clipboard')"));
+    const { dataAccess } = setupFoundry({ tokens: tokenDocs, deleteEmbeddedDocuments });
+
+    await expect(dataAccess.deleteTokens({ tokenIds: ['token-1'] })).rejects.toThrow(
+      'Failed to delete tokens'
+    );
   });
 
   it('throws when no scene is active or viewed', async () => {
