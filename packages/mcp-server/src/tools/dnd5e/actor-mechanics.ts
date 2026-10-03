@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { FoundryClient } from '../../foundry-client.js';
 import { Logger } from '../../logger.js';
-import { ErrorHandler } from '../../utils/error-handler.js';
 import { detectGameSystem, getCachedSystemId } from '../../utils/system-detection.js';
 
 export interface DnD5eActorMechanicsToolsOptions {
@@ -25,12 +24,10 @@ const actorOrTokenSchema = z
 export class DnD5eActorMechanicsTools {
   private foundryClient: FoundryClient;
   private logger: Logger;
-  private errorHandler: ErrorHandler;
 
   constructor({ foundryClient, logger }: DnD5eActorMechanicsToolsOptions) {
     this.foundryClient = foundryClient;
     this.logger = logger.child({ component: 'DnD5eActorMechanicsTools' });
-    this.errorHandler = new ErrorHandler(this.logger);
   }
 
   getToolDefinitions() {
@@ -192,7 +189,10 @@ export class DnD5eActorMechanicsTools {
 
       return result;
     } catch (error) {
-      this.errorHandler.handleToolError(error, 'apply-damage', 'applying damage/healing');
+      this.logger.error('Failed to apply damage', error);
+      throw new Error(
+        `Failed to apply damage: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
     }
   }
 
@@ -232,7 +232,10 @@ export class DnD5eActorMechanicsTools {
 
       return result;
     } catch (error) {
-      this.errorHandler.handleToolError(error, 'roll-check', 'rolling check');
+      this.logger.error('Failed to roll check', error);
+      throw new Error(
+        `Failed to roll check: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
     }
   }
 }
