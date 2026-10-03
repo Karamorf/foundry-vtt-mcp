@@ -163,6 +163,12 @@ export class QueryHandlers {
     CONFIG.queries[`${modulePrefix}.addSpellsToActor`] = this.handleAddSpellsToActor.bind(this);
     CONFIG.queries[`${modulePrefix}.addFeaturesFromCompendium`] =
       this.handleAddFeaturesFromCompendium.bind(this);
+
+    // Combat queries
+    CONFIG.queries[`${modulePrefix}.start-combat`] = this.handleStartCombat.bind(this);
+    CONFIG.queries[`${modulePrefix}.next-turn`] = this.handleNextTurn.bind(this);
+    CONFIG.queries[`${modulePrefix}.end-combat`] = this.handleEndCombat.bind(this);
+    CONFIG.queries[`${modulePrefix}.get-combat-state`] = this.handleGetCombatState.bind(this);
   }
 
   /**
@@ -2194,5 +2200,48 @@ export class QueryHandlers {
     if (!gmCheck.allowed) return { error: 'Access denied', success: false };
     this.dataAccess.validateFoundryState();
     return this.dataAccess.manageEffects(data);
+  }
+
+  // ─── Combat ─────────────────────────────────────────────────────────────────
+
+  private async handleStartCombat(data: {
+    sceneId?: string;
+    tokenIds?: string[];
+    rollInitiative?: boolean;
+    replace?: boolean;
+  }): Promise<any> {
+    const gmCheck = this.validateGMAccess();
+    if (!gmCheck.allowed) return { error: 'Access denied', success: false };
+    this.dataAccess.validateFoundryState();
+    if (data?.tokenIds !== undefined && !Array.isArray(data.tokenIds)) {
+      throw new Error('tokenIds must be an array of token IDs');
+    }
+    return this.dataAccess.startCombat(data ?? {});
+  }
+
+  private async handleNextTurn(data: {
+    sceneId?: string;
+    combatId?: string;
+    previous?: boolean;
+    round?: boolean;
+  }): Promise<any> {
+    const gmCheck = this.validateGMAccess();
+    if (!gmCheck.allowed) return { error: 'Access denied', success: false };
+    this.dataAccess.validateFoundryState();
+    return this.dataAccess.advanceCombat(data ?? {});
+  }
+
+  private async handleEndCombat(data: { sceneId?: string; combatId?: string }): Promise<any> {
+    const gmCheck = this.validateGMAccess();
+    if (!gmCheck.allowed) return { error: 'Access denied', success: false };
+    this.dataAccess.validateFoundryState();
+    return this.dataAccess.endCombat(data ?? {});
+  }
+
+  private async handleGetCombatState(data: { sceneId?: string; combatId?: string }): Promise<any> {
+    const gmCheck = this.validateGMAccess();
+    if (!gmCheck.allowed) return { error: 'Access denied', success: false };
+    this.dataAccess.validateFoundryState();
+    return this.dataAccess.getCombatState(data ?? {});
   }
 }

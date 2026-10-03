@@ -63,6 +63,27 @@ export class PermissionManager {
       settingKey: 'allowWriteOperations',
       requiresGM: true,
     },
+    startCombat: {
+      name: 'Start Combat',
+      level: PERMISSION_LEVELS.MEDIUM_RISK,
+      description: 'Create a combat encounter on a scene, add combatants and roll initiative',
+      settingKey: 'allowWriteOperations',
+      requiresGM: true,
+    },
+    advanceCombat: {
+      name: 'Advance Combat',
+      level: PERMISSION_LEVELS.LOW_RISK,
+      description: 'Advance or rewind the turn or round of a combat encounter',
+      settingKey: 'allowWriteOperations',
+      requiresGM: true,
+    },
+    endCombat: {
+      name: 'End Combat',
+      level: PERMISSION_LEVELS.MEDIUM_RISK,
+      description: 'End a combat encounter by deleting it',
+      settingKey: 'allowWriteOperations',
+      requiresGM: true,
+    },
   };
 
   /**
